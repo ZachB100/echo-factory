@@ -10,9 +10,12 @@ pad controller) into an instrument for playing the delay live.
 
 - Delay time in ms or tempo-synced divisions, with adjustable glide
 - Feedback, ping-pong, stereo width, Low Cut and High Cut (in the loop or on the output)
-- **Wear**: tape saturation, darkening, wow and flutter
+- **Wear** in five **Styles**: Studio Tape, Tape Echo, Bucket Brigade, Lo-Fi Digital and Telephone
 - **Diffusion**: a 16-line feedback delay network reverb that takes over the repeats
+- **Shimmer**: the reverb fed back through a pitch shifter, from an octave down to two octaves up
+- **Modulation**: chorus, flanger or phaser, in the feedback loop or on the output
 - **Multi-Tap**: up to 16 taps, each with its own time, level, pan, pitch and Reverse
+- **Groove** and **Feel**: swing for synced taps, and synced echoes ahead of or behind the beat
 - **Gestures**: Throw, Freeze, Tapestop, Runaway and Reverse, held or latched
 - Factory presets, each with a spoken hint for which gesture to try
 

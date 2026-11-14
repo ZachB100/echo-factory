@@ -71,6 +71,21 @@ float parseMilliseconds (const juce::String& text)
     return isSeconds ? number * 1000.0f : number;
 }
 
+juce::String formatSignedMilliseconds (float ms, bool spoken)
+{
+    const auto whole = juce::roundToInt (ms);
+
+    if (whole == 0)
+        return spoken ? "0 milliseconds" : "0 ms";
+
+    const auto magnitude = juce::String (std::abs (whole));
+
+    if (! spoken)
+        return (whole > 0 ? "+" : "-") + magnitude + " ms";
+
+    return (whole > 0 ? "plus " : "minus ") + magnitude + (std::abs (whole) == 1 ? " millisecond" : " milliseconds");
+}
+
 const juce::StringArray& getFilterPositionNames()
 {
     static const juce::StringArray names { "In Feedback Loop", "Output Only" };
@@ -82,6 +97,36 @@ const juce::StringArray& getInputModeNames()
     static const juce::StringArray names { "Always", "Throw Only" };
     return names;
 }
+
+const juce::StringArray& getStyleNames()
+{
+    static const juce::StringArray names { "Studio Tape", "Tape Echo", "Bucket Brigade", "Lo-Fi Digital", "Telephone" };
+    return names;
+}
+
+const juce::StringArray& getModulationTypeNames()
+{
+    static const juce::StringArray names { "Off", "Chorus", "Flanger", "Phaser" };
+    return names;
+}
+
+const std::vector<ShimmerPitch>& getShimmerPitches()
+{
+    static const std::vector<ShimmerPitch> pitches {
+        { "Octave down",          -12 },
+        { "Fifth down",            -7 },
+        { "Fourth down",           -5 },
+        { "Major third up",         4 },
+        { "Fourth up",              5 },
+        { "Fifth up",               7 },
+        { "Octave up",             12 },
+        { "Octave and a fifth up", 19 },
+        { "Two octaves up",        24 },
+    };
+    return pitches;
+}
+
+int getDefaultShimmerPitchIndex() { return 6; } // octave up
 
 juce::String formatDecibels (float db, bool spoken)
 {
@@ -100,6 +145,18 @@ juce::String formatDecibels (float db, bool spoken)
     return (rounded > 0.0f ? "plus " : "minus ") + magnitude + (magnitude == "1" ? " decibel" : " decibels");
 }
 
+juce::String formatSemitones (int semitones, bool spoken)
+{
+    if (! spoken)
+        return (semitones > 0 ? "+" : "") + juce::String (semitones) + " st";
+
+    if (semitones == 0)
+        return "0 semitones";
+
+    const auto magnitude = std::abs (semitones);
+    return (semitones > 0 ? "plus " : "minus ") + juce::String (magnitude) + (magnitude == 1 ? " semitone" : " semitones");
+}
+
 juce::String formatFrequency (float hz, float offHz, bool spoken)
 {
     if (juce::approximatelyEqual (hz, offHz))
@@ -112,6 +169,23 @@ juce::String formatFrequency (float hz, float offHz, bool spoken)
     }
 
     return juce::String (juce::roundToInt (hz)) + (spoken ? " hertz" : " Hz");
+}
+
+juce::String formatHertz (float hz, bool spoken)
+{
+    auto text = juce::String (hz, hz < 1.0f ? 2 : 1);
+
+    // Spoken: "0.60" -> "0.6", "2.0" -> "2".
+    if (spoken)
+    {
+        while (text.contains (".") && text.endsWith ("0"))
+            text = text.dropLastCharacters (1);
+
+        if (text.endsWith ("."))
+            text = text.dropLastCharacters (1);
+    }
+
+    return text + (spoken ? " hertz" : " Hz");
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
@@ -127,6 +201,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
             .withValueFromStringFunction ([] (const String& text) { return parseMilliseconds (text); });
     };
 
+    auto onOffAttributes = []
+    {
+        return AudioParameterBoolAttributes()
+            .withStringFromValueFunction ([] (bool v, int) { return v ? String ("On") : String ("Off"); });
+    };
+
     layout.add (std::make_unique<AudioParameterFloat> (
         ID::delayTimeMs, "Delay Time", getDelayTimeRange(), 400.0f, millisecondAttributes()));
 
@@ -136,10 +216,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterFloat> (
         ID::timeSmoothingMs, "Time Smoothing", smoothingRange, defaultTimeSmoothingMs, millisecondAttributes()));
 
-    layout.add (std::make_unique<AudioParameterBool> (
-        ID::sync, "Tempo Sync", false,
-        AudioParameterBoolAttributes()
-            .withStringFromValueFunction ([] (bool v, int) { return v ? String ("On") : String ("Off"); })));
+    layout.add (std::make_unique<AudioParameterBool> (ID::sync, "Tempo Sync", false, onOffAttributes()));
 
     StringArray divisionNames;
     for (const auto& d : getSyncDivisions())
@@ -156,11 +233,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
             .withValueFromStringFunction ([] (const String& text) { return text.getFloatValue(); });
     };
 
+    const NormalisableRange<float> percentRange { 0.0f, 100.0f, 0.1f };
+
     layout.add (std::make_unique<AudioParameterFloat> (
         ID::feedback, "Feedback", NormalisableRange<float> { 0.0f, 95.0f, 0.1f }, 35.0f, percentAttributes()));
 
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ID::mix, "Mix", NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 30.0f, percentAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::mix, "Mix", percentRange, 30.0f, percentAttributes()));
 
     auto frequencyAttributes = [] (float offHz)
     {
@@ -194,15 +272,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterChoice> (
         ID::filterPos, "Filter Position", getFilterPositionNames(), (int) FilterPosition::inFeedbackLoop));
 
-    layout.add (std::make_unique<AudioParameterBool> (
-        ID::freeze, "Freeze", false,
-        AudioParameterBoolAttributes()
-            .withStringFromValueFunction ([] (bool v, int) { return v ? String ("On") : String ("Off"); })));
-
-    layout.add (std::make_unique<AudioParameterBool> (
-        ID::pingPong, "Ping-Pong", false,
-        AudioParameterBoolAttributes()
-            .withStringFromValueFunction ([] (bool v, int) { return v ? String ("On") : String ("Off"); })));
+    layout.add (std::make_unique<AudioParameterBool> (ID::freeze, "Freeze", false, onOffAttributes()));
+    layout.add (std::make_unique<AudioParameterBool> (ID::pingPong, "Ping-Pong", false, onOffAttributes()));
 
     NormalisableRange<float> widthRange { 0.0f, maxStereoWidthMs, 1.0f };
     widthRange.setSkewForCentre (20.0f);
@@ -211,12 +282,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         ID::stereoWidthMs, "Stereo Width", widthRange, 0.0f, millisecondAttributes()));
 
     // ---- Performance ---------------------------------------------------------
-    auto gesture = [&layout] (const ParameterID& id, const String& name)
+    auto gesture = [&layout, &onOffAttributes] (const ParameterID& id, const String& name)
     {
-        layout.add (std::make_unique<AudioParameterBool> (
-            id, name, false,
-            AudioParameterBoolAttributes()
-                .withStringFromValueFunction ([] (bool v, int) { return v ? String ("On") : String ("Off"); })));
+        layout.add (std::make_unique<AudioParameterBool> (id, name, false, onOffAttributes()));
     };
 
     gesture (ID::throwGesture, "Throw");
@@ -248,21 +316,50 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         ID::tapestopTimeMs, "Tapestop Time", tapestopRange, defaultTapestopMs, millisecondAttributes()));
 
     layout.add (std::make_unique<AudioParameterFloat> (
-        ID::runawayDrive, "Runaway Drive", NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f, percentAttributes()));
+        ID::runawayDrive, "Runaway Drive", percentRange, 50.0f, percentAttributes()));
 
     // ---- Character -----------------------------------------------------------
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ID::wear, "Wear", NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 0.0f, percentAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::wear, "Wear", percentRange, 0.0f, percentAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::diffusion, "Diffusion", percentRange, 0.0f, percentAttributes()));
 
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ID::diffusion, "Diffusion", NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 0.0f, percentAttributes()));
-
-    // ---- Added after release (kept last) -------------------------------------
+    // ---- Added after release (kept last, in order) ---------------------------
     // The taps themselves aren't parameters: they live in the state tree (Taps.h).
-    layout.add (std::make_unique<AudioParameterBool> (
-        ID::multiTap, "Multi-Tap", false,
-        AudioParameterBoolAttributes()
-            .withStringFromValueFunction ([] (bool v, int) { return v ? String ("On") : String ("Off"); })));
+    layout.add (std::make_unique<AudioParameterBool> (ID::multiTap, "Multi-Tap", false, onOffAttributes()));
+
+    layout.add (std::make_unique<AudioParameterChoice> (ID::style, "Style", getStyleNames(), 0));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::shimmer, "Shimmer", percentRange, 0.0f, percentAttributes()));
+
+    StringArray pitchNames;
+    for (const auto& p : getShimmerPitches())
+        pitchNames.add (p.name);
+
+    layout.add (std::make_unique<AudioParameterChoice> (ID::shimmerPitch, "Shimmer Pitch", pitchNames, getDefaultShimmerPitchIndex()));
+
+    layout.add (std::make_unique<AudioParameterChoice> (ID::modType, "Modulation", getModulationTypeNames(), 0));
+
+    NormalisableRange<float> rateRange { minModRateHz, maxModRateHz, 0.01f };
+    rateRange.setSkewForCentre (1.0f);
+
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ID::modRate, "Modulation Rate", rateRange, defaultModRateHz,
+        AudioParameterFloatAttributes()
+            .withLabel ("Hz")
+            .withStringFromValueFunction ([] (float v, int) { return formatHertz (v, false); })
+            .withValueFromStringFunction ([] (const String& text) { return text.getFloatValue(); })));
+
+    layout.add (std::make_unique<AudioParameterFloat> (ID::modDepth, "Modulation Depth", percentRange, 50.0f, percentAttributes()));
+
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ID::modPos, "Modulation Position", getFilterPositionNames(), (int) FilterPosition::inFeedbackLoop));
+
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ID::feelMs, "Feel", NormalisableRange<float> { -maxFeelMs, maxFeelMs, 1.0f }, 0.0f,
+        AudioParameterFloatAttributes()
+            .withLabel ("ms")
+            .withStringFromValueFunction ([] (float v, int) { return formatSignedMilliseconds (v, false); })
+            .withValueFromStringFunction ([] (const String& text) { return text.getFloatValue(); })));
+
+    layout.add (std::make_unique<AudioParameterFloat> (ID::groove, "Groove", percentRange, 0.0f, percentAttributes()));
 
     return layout;
 }

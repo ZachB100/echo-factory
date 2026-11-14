@@ -28,8 +28,9 @@ void check (const char* name, bool ok, const char* detail)
 struct Setup
 {
     int channels = 2;
-    float delayMs = 300.0f, feedback = 0.5f, wear = 0.0f, runawayDrive = 0.5f, diffusion = 0.0f;
-    bool pingPong = false, filters = false;
+    float delayMs = 300.0f, feedback = 0.5f, wear = 0.0f, runawayDrive = 0.5f, diffusion = 0.0f, shimmer = 0.0f;
+    int style = 0, shimmerSemitones = 12, modType = 0;
+    bool pingPong = false, filters = false, modInLoop = true;
     int outputChannel = 0;
 };
 
@@ -47,6 +48,9 @@ std::vector<float> run (const Setup& s, float seconds, const Input& input, const
     e.setPingPong (s.pingPong); e.setStereoWidthMs (0); e.setWear (s.wear);
     e.setRunaway (false); e.setRunawayDrive (s.runawayDrive); e.setTapestop (false); e.setTapestopTimeMs (500);
     e.setReverse (false); e.setDiffusion (s.diffusion);
+    e.setStyle (s.style); e.setShimmer (s.shimmer); e.setShimmerSemitones ((float) s.shimmerSemitones);
+    e.setModulationType (s.modType); e.setModulationRateHz (0.6f); e.setModulationDepth (0.7f); e.setModulationInFeedbackLoop (s.modInLoop);
+    e.setGroove (0.0f); e.setFeelMs (0.0f);
     e.reset();
 
     std::vector<float> out;
@@ -114,6 +118,34 @@ float maxStep (const std::vector<float>& v)
     float m = 0.0f;
     for (size_t i = 1; i < v.size(); ++i) m = std::isfinite (v[i]) ? std::max (m, std::abs (v[i] - v[i - 1])) : 1e9f;
     return m;
+}
+
+/** Level of `v` at one frequency between `from` and `to` seconds (a single DFT bin). */
+float toneLevel (const std::vector<float>& v, float hz, float from, float to)
+{
+    double re = 0.0, im = 0.0; int count = 0;
+    for (auto i = (size_t) (from * sr); i < (size_t) (to * sr) && i < v.size(); ++i, ++count)
+    {
+        const auto w = juce::MathConstants<double>::twoPi * hz * (double) i / sr;
+        re += v[i] * std::cos (w); im -= v[i] * std::sin (w);
+    }
+    return (float) (std::sqrt (re * re + im * im) / std::max (1, count));
+}
+
+/** RT60 from the backward-integrated energy decay, fitted between two levels from `start` seconds on. */
+float decayTime (const std::vector<float>& v, float start, double fromDb, double toDb)
+{
+    std::vector<double> decay (v.size());
+    double tail = 0.0;
+    for (size_t i = v.size(); i-- > 0;) { tail += (double) v[i] * v[i]; decay[i] = tail; }
+    const auto first = (size_t) (start * sr);
+    const auto timeAt = [&] (double db)
+    {
+        for (size_t i = first; i < decay.size(); ++i)
+            if (10.0 * std::log10 (decay[i] / decay[first]) <= db) return (float) i / sr;
+        return 1e9f;
+    };
+    return (float) (60.0 / (fromDb - toDb)) * (timeAt (toDb) - timeAt (fromDb));
 }
 
 void testCleanPath()
@@ -604,6 +636,167 @@ void testTaps()
     }
 }
 
+void testStyles()
+{
+    char d[128], name[96];
+    const auto impulse = [] (long n) { return n == 0 ? 1.0f : 0.0f; };
+
+    for (int style = 0; style < DelayEngine::numStyles; ++style)
+    {
+        // Wear 0 is the clean delay in every style.
+        Setup s; s.channels = 1; s.delayMs = 100.0f; s.style = style; s.filters = true;
+        Setup clean = s; clean.style = 0;
+        const auto out = run (s, 0.5f, impulse), ref = run (clean, 0.5f, impulse);
+        std::snprintf (name, sizeof name, "style %d, wear 0: bit-exact clean delay", style);
+        std::snprintf (d, sizeof d, "diff %.2e", maxDiff (out, ref, 0.0f));
+        check (name, maxDiff (out, ref, 0.0f) == 0.0f, d);
+
+        // Full Wear at 95% feedback stays bounded and still dies away.
+        Setup w; w.feedback = 0.95f; w.wear = 1.0f; w.style = style;
+        const auto worn = run (w, 30.0f, noiseBurst());
+        std::snprintf (name, sizeof name, "style %d, wear 1, feedback 95%%: bounded, decays", style);
+        std::snprintf (d, sizeof d, "peak %.3f  last-second rms %.4f", peak (worn), rms (worn, 29.0f, 30.0f));
+        check (name, peak (worn) < 1.2f && rms (worn, 29.0f, 30.0f) < 0.05f, d);
+    }
+
+    {
+        // Switching between the analogue styles with Wear up doesn't click. (Lo-Fi is
+        // left out: its sample-and-hold steps are the sound.)
+        Setup s; s.wear = 0.6f;
+        const auto ref = run (s, 4.0f, sine());
+        const auto out = run (s, 4.0f, sine(), [] (DelayEngine& e, float t)
+        {
+            const int cycle[] { 0, 1, 2, 4 };
+            e.setStyle (cycle[(int) (t * 2.0f) % 4]);
+        });
+        std::snprintf (d, sizeof d, "max step %.4f (reference %.4f)", maxStep (out), maxStep (ref));
+        check ("switching styles every 0.5 s: no clicks", maxStep (out) <= maxStep (ref) * 1.5f, d);
+    }
+}
+
+void testShimmer()
+{
+    char d[128], name[96];
+
+    {
+        // Octave up: a 220 Hz tone through the reverb comes back with far more at 440 Hz than without Shimmer.
+        Setup s; s.channels = 1; s.feedback = 0.5f; s.diffusion = 1.0f;
+        const auto tone = [] (long n) { return n < (long) (0.3f * sr) ? 0.5f * std::sin (juce::MathConstants<float>::twoPi * 220.0f * (float) n / sr) : 0.0f; };
+        const auto plain = run (s, 3.0f, tone);
+        s.shimmer = 1.0f;
+        const auto shimmered = run (s, 3.0f, tone);
+        const auto liftDb = 20.0f * std::log10 (toneLevel (shimmered, 440.0f, 1.0f, 3.0f) / toneLevel (plain, 440.0f, 1.0f, 3.0f));
+        std::snprintf (d, sizeof d, "440 Hz lift %+.1f dB", liftDb);
+        check ("shimmer octave up: the tail climbs an octave", liftDb > 10.0f, d);
+    }
+
+    for (int semitones : { -12, 12, 24 })
+    {
+        // Full Shimmer at the longest tail (feedback 95%) stays bounded and still decays, at every extreme of the shift.
+        Setup s; s.feedback = 0.95f; s.diffusion = 1.0f; s.shimmer = 1.0f; s.shimmerSemitones = semitones;
+        const auto out = run (s, 40.0f, noiseBurst());
+        std::snprintf (name, sizeof name, "shimmer 1 at %+d, feedback 95%%: bounded, decays", semitones);
+        std::snprintf (d, sizeof d, "peak %.3f, rms %.4f -> %.4f", peak (out), rms (out, 10.0f, 11.0f), rms (out, 39.0f, 40.0f));
+        check (name, peak (out) < 2.0f && rms (out, 39.0f, 40.0f) < 0.05f && rms (out, 39.0f, 40.0f) < 0.5f * rms (out, 10.0f, 11.0f), d);
+    }
+
+    {
+        // With Shimmer on, the tail is still as long as Feedback says (as in the Diffusion test).
+        Setup s; s.channels = 1; s.feedback = 0.7f; s.diffusion = 1.0f; s.shimmer = 1.0f;
+        const auto target = juce::jlimit (2.0f, 20.0f, 3.0f * 0.3f / -std::log10 (0.7f));
+        const auto tone = [] (long n) { return n < (long) (0.3f * sr) ? 0.5f * std::sin (juce::MathConstants<float>::twoPi * 120.0f * (float) n / sr) : 0.0f; };
+        const auto out = run (s, 2.5f * target + 1.0f, tone);
+        const auto rt60 = decayTime (out, 1.0f, -5.0, -25.0);
+        std::snprintf (d, sizeof d, "RT60 %.2f s, target %.2f s", rt60, target);
+        check ("shimmer 1, feedback 70%: reverb length still follows", rt60 > 0.65f * target && rt60 < 1.35f * target, d);
+    }
+}
+
+void testModulation()
+{
+    char d[128], name[96];
+    const char* names[] { "chorus", "flanger", "phaser" };
+
+    for (int type = 1; type <= 3; ++type)
+        for (bool inLoop : { true, false })
+        {
+            // Half and half with the dry signal, the gain never passes 1 at any
+            // frequency, so the loop is as safe as without. Peaks can still rise
+            // a little: the phaser's allpasses spread the phase, and a transient's
+            // parts no longer line up as they did.
+            Setup s; s.feedback = 0.95f; s.modType = type; s.modInLoop = inLoop;
+            const auto out = run (s, 30.0f, noiseBurst());
+            std::snprintf (name, sizeof name, "%s %s, feedback 95%%: bounded, decays", names[type - 1], inLoop ? "in the loop" : "on the output");
+            std::snprintf (d, sizeof d, "peak %.3f  last-second rms %.4f", peak (out), rms (out, 29.0f, 30.0f));
+            check (name, peak (out) < 1.5f && rms (out, 29.0f, 30.0f) < 0.05f, d);
+        }
+
+    {
+        // Off is the plain delay, exactly: before it's ever used, and once an output-only effect has faded out.
+        Setup s; s.filters = true; s.modInLoop = false;
+        const auto ref = run (s, 3.0f, sine());
+        const auto onThenOff = run (s, 3.0f, sine(), [] (DelayEngine& e, float t) { e.setModulationType (t < 0.5f ? 3 : 0); });
+        Setup loop = s; loop.modInLoop = true;
+        const auto never = run (loop, 3.0f, sine());
+        std::snprintf (d, sizeof d, "never on %.2e, after switching off %.2e", maxDiff (never, ref, 0.0f), maxDiff (onThenOff, ref, 0.7f));
+        check ("modulation off: bit-exact plain delay", maxDiff (never, ref, 0.0f) == 0.0f && maxDiff (onThenOff, ref, 0.7f) == 0.0f, d);
+    }
+
+    {
+        // Half and half with the dry signal: on white noise that's about -3 dB, never a boost.
+        Setup s; s.delayMs = 100.0f; s.feedback = 0.0f; s.modInLoop = false;
+        const auto plain = run (s, 3.0f, loudNoise());
+        s.modType = 1;
+        const auto chorused = run (s, 3.0f, loudNoise());
+        const auto levelDb = 20.0f * std::log10 (rms (chorused, 1.0f, 3.0f) / rms (plain, 1.0f, 3.0f));
+        std::snprintf (d, sizeof d, "level %+.1f dB", levelDb);
+        check ("chorus on the output: about -3 dB on noise", levelDb > -4.5f && levelDb < -1.5f, d);
+    }
+
+    {
+        // Changing type and position mid-flight doesn't click.
+        Setup s;
+        const auto ref = run (s, 4.0f, sine());
+        const auto out = run (s, 4.0f, sine(), [] (DelayEngine& e, float t)
+        {
+            e.setModulationType (1 + (int) (t * 2.0f) % 3);
+            e.setModulationInFeedbackLoop ((int) (t * 1.3f) % 2 == 0);
+        });
+        std::snprintf (d, sizeof d, "max step %.4f (reference %.4f)", maxStep (out), maxStep (ref));
+        check ("modulation type and position switching: no clicks", maxStep (out) <= maxStep (ref) * 1.5f, d);
+    }
+}
+
+void testGroove()
+{
+    char d[160];
+    const auto impulse = [] (long n) { return n == 0 ? 1.0f : 0.0f; };
+
+    // At 120 BPM a tap half a beat in (250 ms) swings to two thirds (333 ms) at full
+    // Groove, and Feel moves it by its milliseconds. The main echo is out of the way at 5 s.
+    const auto tapMs = [&] (float groove, float feelMs)
+    {
+        Setup s; s.channels = 1; s.delayMs = 5000.0f; s.feedback = 0.0f;
+        const auto out = run (s, 0.6f, impulse, [groove, feelMs] (DelayEngine& e, float t)
+        {
+            if (t == 0.0f)
+            {
+                DelayEngine::TapSettings tap; tap.uid = 1; tap.beats = 0.5f; tap.delayMs = 10.0f;
+                e.setTaps ({ tap }); e.setMultiTap (true); e.setTapTempo (true, 120.0);
+                e.setGroove (groove); e.setFeelMs (feelMs);
+            }
+        });
+        size_t at = 0;
+        for (size_t i = 1; i < out.size(); ++i) if (std::abs (out[i]) > std::abs (out[at])) at = i;
+        return (float) at / sr * 1000.0f;
+    };
+
+    const auto straight = tapMs (0.0f, 0.0f), full = tapMs (1.0f, 0.0f), half = tapMs (0.5f, 0.0f), dragged = tapMs (0.0f, 20.0f);
+    std::snprintf (d, sizeof d, "straight %.1f ms, groove 1 %.1f ms, groove 0.5 %.1f ms, feel +20 %.1f ms", straight, full, half, dragged);
+    check ("groove and feel on a synced eighth tap", std::abs (straight - 250.0f) < 0.5f && std::abs (full - 333.3f) < 0.5f
+           && std::abs (half - 291.7f) < 0.5f && std::abs (dragged - 270.0f) < 0.5f, d);
+}
+
 }
 
 int main()
@@ -615,6 +808,10 @@ int main()
     testDiffusion();
     testReverse();
     testTaps();
+    testStyles();
+    testShimmer();
+    testModulation();
+    testGroove();
 
     std::printf ("%d failure(s)\n", failures);
     return failures == 0 ? 0 : 1;

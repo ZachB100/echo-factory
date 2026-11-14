@@ -37,6 +37,17 @@ namespace Params
 
         // Added after release: version hint 2.
         inline const juce::ParameterID multiTap     { "multiTap",     2 };
+
+        // Added after release: version hint 3.
+        inline const juce::ParameterID style        { "style",        3 };
+        inline const juce::ParameterID shimmer      { "shimmer",      3 };
+        inline const juce::ParameterID shimmerPitch { "shimmerPitch", 3 };
+        inline const juce::ParameterID modType      { "modType",      3 };
+        inline const juce::ParameterID modRate      { "modRate",      3 };
+        inline const juce::ParameterID modDepth     { "modDepth",     3 };
+        inline const juce::ParameterID modPos       { "modPos",       3 };
+        inline const juce::ParameterID feelMs       { "feelMs",       3 };
+        inline const juce::ParameterID groove       { "groove",       3 };
     }
 
     /** The performance gestures, in MIDI note order (Throw, Freeze, Tapestop, Runaway, Reverse). */
@@ -73,11 +84,34 @@ namespace Params
     constexpr float highCutMinHz = 500.0f;
     constexpr float highCutMaxHz = 20000.0f;
 
+    // Modulation LFO rate.
+    constexpr float minModRateHz     = 0.05f;
+    constexpr float maxModRateHz     = 8.0f;
+    constexpr float defaultModRateHz = 0.6f;
+
+    // Feel: how far synced echoes sit ahead of (negative) or behind the beat.
+    constexpr float maxFeelMs = 50.0f;
+
     enum class FilterPosition { inFeedbackLoop = 0, outputOnly = 1 };
     const juce::StringArray& getFilterPositionNames();
 
     enum class InputMode { always = 0, throwOnly = 1 };
     const juce::StringArray& getInputModeNames();
+
+    /** Echo styles, in DelayEngine::Style order. */
+    const juce::StringArray& getStyleNames();
+
+    /** Modulation types, in Modulator::Type order (Off first). */
+    const juce::StringArray& getModulationTypeNames();
+
+    struct ShimmerPitch
+    {
+        const char* name;  // e.g. "Octave up"
+        int semitones;
+    };
+
+    const std::vector<ShimmerPitch>& getShimmerPitches();
+    int getDefaultShimmerPitchIndex();
 
     struct SyncDivision
     {
@@ -100,11 +134,20 @@ namespace Params
     /** "250", "250 ms", "1.5 s", "2 seconds" -> milliseconds. */
     float parseMilliseconds (const juce::String& text);
 
+    /** e.g. "+10 ms" / "plus 10 milliseconds", "0 ms" / "0 milliseconds". */
+    juce::String formatSignedMilliseconds (float ms, bool spoken);
+
     /** "Off" when offHz is reached, otherwise e.g. "250 Hz" / "2.5 kilohertz". */
     juce::String formatFrequency (float hz, float offHz, bool spoken);
 
+    /** e.g. "0.60 Hz" / "0.6 hertz", "2.5 Hz" / "2.5 hertz". */
+    juce::String formatHertz (float hz, bool spoken);
+
     /** e.g. "+6.0 dB" / "plus 6 decibels". */
     juce::String formatDecibels (float db, bool spoken);
+
+    /** e.g. "+7 st" / "plus 7 semitones". */
+    juce::String formatSemitones (int semitones, bool spoken);
 
     juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 }

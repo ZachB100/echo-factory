@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_dsp/juce_dsp.h>
+#include "PitchShifter.h"
 
 /**
     The reverb behind Diffusion: a feedback delay network (Jot's design).
@@ -15,6 +16,13 @@
     Each line's length drifts slowly by up to ±0.5 ms, at its own rate. That
     smears the network's resonances, so sustained tones aren't picked out and
     boosted and the tail doesn't ring metallically.
+
+    Shimmer feeds the previous sample's output back into the input through a
+    pitch shifter, so every pass through the network climbs (or falls) by the
+    shift. The feed is trimmed below 150 Hz and above 8 kHz, so repeated
+    shifting can't pile up at either end, and soft-limited as a safety net.
+    setDecay takes the send too: the lines' own decay is shortened to make room
+    for the energy the feed puts back, so the tail is still rt60 long.
 
     It sits after the delay's feedback loop, never inside it, so it can have
     make-up gain without any risk of the loop running away.
@@ -49,20 +57,32 @@ public:
             oscSin[i] = std::sin (start);
         }
 
-        setDecay (2.0f, 0.5f);
+        shifter.prepare (sampleRate, shimmerWindowMs);
+        shimmerLowCoef  = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * shimmerLowHz  / (float) sampleRate);
+        shimmerHighCoef = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * shimmerHighHz / (float) sampleRate);
+
+        setDecay (2.0f, 0.5f, 0.0f);
         clear();
     }
 
-    /** Time to fall 60 dB at low frequencies; the top end takes highRatio times as long. */
-    void setDecay (float rt60Seconds, float highRatio)
+    /** Time to fall 60 dB at low frequencies; the top end takes highRatio times as long.
+        `send` is Shimmer's feed (setShimmer), which the lines make room for. */
+    void setDecay (float rt60Seconds, float highRatio, float send)
     {
         auto meanPass = 0.0f;
+
+        // Each pass, the feed puts back about send² / N of the energy the lines
+        // hold (the shifted signal is uncorrelated with what's in them), so the
+        // lines keep that much less.
+        const auto feedShare = send * send / (float) numLines;
 
         for (size_t i = 0; i < (size_t) numLines; ++i)
         {
             const auto length = (float) lines[i].size();
-            const auto lowGain  = std::pow (10.0f, -3.0f * length / (rt60Seconds * (float) sampleRate));
-            const auto highGain = std::pow (10.0f, -3.0f * length / (rt60Seconds * highRatio * (float) sampleRate));
+            const auto lowTarget  = std::pow (10.0f, -3.0f * length / (rt60Seconds * (float) sampleRate));
+            const auto highTarget = std::pow (10.0f, -3.0f * length / (rt60Seconds * highRatio * (float) sampleRate));
+            const auto lowGain  = feedShare > 0.0f ? std::sqrt (juce::jmax (0.0001f, lowTarget * lowTarget - feedShare)) : lowTarget;
+            const auto highGain = feedShare > 0.0f ? std::sqrt (juce::jmax (0.0001f, highTarget * highTarget - feedShare)) : highTarget;
 
             // H(z) = lowGain (1 - pole) / (1 - pole z^-1): lowGain at DC, highGain at Nyquist.
             poles[i] = (lowGain - highGain) / (lowGain + highGain);
@@ -72,13 +92,18 @@ public:
 
         // Each pass through the lines hands 1/N of the stored energy to the
         // output and keeps g² of it, so a unit of input comes out as about
-        // 1 / (N (1 - g²)). Make-up gain undoes that.
+        // 1 / (N (1 - g²)). Make-up gain undoes that. (With Shimmer the lines
+        // keep less but the feed puts it back, so the total is unchanged.)
         meanPass /= (float) numLines;
         const auto passGainSquared = std::pow (10.0f, -6.0f * meanPass / (rt60Seconds * (float) sampleRate));
         makeup = makeupTrim * std::sqrt ((float) numLines * (1.0f - passGainSquared));
     }
 
     float getMakeup() const { return makeup; }
+
+    /** Shimmer's feed, 0 to about 0.6; 0 leaves the shifter out of the path. */
+    void setShimmer (float send)        { shimmerSend = juce::jmax (0.0f, send); }
+    void setShimmerRatio (float ratio)  { shifter.setRatio (ratio); }
 
     void clear()
     {
@@ -91,11 +116,37 @@ public:
         index.fill (0);
         preIndex.fill (0);
         absorption.fill (0.0f);
+
+        shifter.clear();
+        shimmerLow = shimmerHigh = lastOutput = 0.0f;
+        shimmerOn = false;
     }
 
     /** Returns the reverb only (no dry signal), before make-up gain. */
     float process (float input)
     {
+        if (shimmerSend > 0.0f)
+        {
+            if (! shimmerOn)
+            {
+                // Coming in from off: nothing stale in the shifter.
+                shifter.clear();
+                shimmerLow = shimmerHigh = 0.0f;
+                shimmerOn = true;
+            }
+
+            auto shifted = shifter.process (lastOutput);
+            shimmerLow += shimmerLowCoef * (shifted - shimmerLow);
+            shifted -= shimmerLow;
+            shimmerHigh += shimmerHighCoef * (shifted - shimmerHigh);
+            const auto fed = shimmerSend * shimmerHigh;
+            input += shimmerCeiling * std::tanh (fed / shimmerCeiling);
+        }
+        else
+        {
+            shimmerOn = false;
+        }
+
         // Pre-diffusion: Schroeder allpasses thicken the attack.
         for (size_t i = 0; i < (size_t) numPreStages; ++i)
         {
@@ -142,7 +193,8 @@ public:
             if (++index[i] == lines[i].size()) index[i] = 0;
         }
 
-        return output * invSqrtN;
+        lastOutput = output * invSqrtN;
+        return lastOutput;
     }
 
 private:
@@ -152,6 +204,11 @@ private:
     // Measured (EngineTests, "comes out at about input level"): corrects the
     // estimate above for what the modulation's interpolation takes out.
     static constexpr float makeupTrim = 1.84f;
+
+    // Shimmer: the shifter's window, the feed's band, and the soft limit on it.
+    static constexpr float shimmerWindowMs = 80.0f;
+    static constexpr float shimmerLowHz = 150.0f, shimmerHighHz = 8000.0f;
+    static constexpr float shimmerCeiling = 1.0f;
 
     // Different sign patterns in and out, so no line is favoured.
     static float inputSign (size_t i)  { return (0x5A3Cu >> i) & 1u ? 1.0f : -1.0f; }
@@ -178,4 +235,9 @@ private:
     std::array<float, numLines> oscCos {}, oscSin {}, rotCos {}, rotSin {};
     double sampleRate = 44100.0;
     float makeup = 1.0f, modDepth = 0.0f;
+
+    PitchShifter shifter;
+    float shimmerSend = 0.0f, shimmerLowCoef = 0.0f, shimmerHighCoef = 1.0f;
+    float shimmerLow = 0.0f, shimmerHigh = 0.0f, lastOutput = 0.0f;
+    bool shimmerOn = false;
 };

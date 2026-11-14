@@ -118,6 +118,15 @@ private:
     std::atomic<float>* wearParam         = nullptr;
     std::atomic<float>* diffusionParam    = nullptr;
     std::atomic<float>* multiTapParam     = nullptr;
+    std::atomic<float>* styleParam        = nullptr;
+    std::atomic<float>* shimmerParam      = nullptr;
+    std::atomic<float>* shimmerPitchParam = nullptr;
+    std::atomic<float>* modTypeParam      = nullptr;
+    std::atomic<float>* modRateParam      = nullptr;
+    std::atomic<float>* modDepthParam     = nullptr;
+    std::atomic<float>* modPosParam       = nullptr;
+    std::atomic<float>* feelParam         = nullptr;
+    std::atomic<float>* grooveParam       = nullptr;
 
     double hostBpm = 120.0;
 

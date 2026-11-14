@@ -35,16 +35,7 @@ juce::String formatPan (float pan, bool spoken)
 
 juce::String formatSemitones (float semitones, bool spoken)
 {
-    const auto steps = juce::roundToInt (semitones);
-
-    if (! spoken)
-        return (steps > 0 ? "+" : "") + juce::String (steps) + " st";
-
-    if (steps == 0)
-        return "0 semitones";
-
-    const auto magnitude = std::abs (steps);
-    return (steps > 0 ? "plus " : "minus ") + juce::String (magnitude) + (magnitude == 1 ? " semitone" : " semitones");
+    return Params::formatSemitones (juce::roundToInt (semitones), spoken);
 }
 
 juce::ValueTree makeTap (float timeMs, int division, float levelDb, float pan, int pitch, bool reverse)

@@ -2,21 +2,37 @@
 
 namespace
 {
-    // Wear
-    constexpr float wearMinCeiling   = 0.35f;  // saturator ceiling at full Wear
-    constexpr float darkestHz        = 4500.0f; // one-pole cutoff at full Wear
-    constexpr float maxWowMs         = 1.0f;
-    constexpr float maxFlutterMs     = 0.03f;
-    constexpr float wowHz            = 0.7f;
-    constexpr float flutterHz        = 7.3f;
-    constexpr float driftHz          = 0.5f;
-    constexpr float driftIntervalSec = 0.4f;
-
     // Runaway: feedback from 110% (drive 0) to 160% (drive 1), ceiling from 0.5 down to 0.3.
     constexpr float runawayMinFeedback = 1.1f,  runawayFeedbackRange = 0.5f;
     constexpr float runawayMaxCeiling  = 0.5f,  runawayCeilingRange  = 0.2f;
 
     constexpr float dcBlockHz = 5.0f;
+    constexpr float driftHz = 0.5f, driftIntervalSec = 0.4f;
+
+    // Lo-Fi at full Wear: this many bits at this sample rate.
+    constexpr float lofiMinBits = 8.0f, lofiMinRateHz = 8000.0f;
+
+    // Shimmer's feed into the reverb at full.
+    constexpr float maxShimmerSend = 0.6f;
+
+    // What each Style does at full Wear. Studio Tape is the original character.
+    struct StyleSpec
+    {
+        float minCeiling;   // saturator ceiling
+        float darkestHz;    // one-pole darkening cutoff (20 kHz: none)
+        float thinHz;       // one-pole low cut in the loop (0: none)
+        float wowMs, wowHz, flutterMs, flutterHz;
+        float driftMix;     // share of the wow that's random drift rather than the sine
+        float lofi;         // 1: sample rate and bit depth fall with Wear
+    };
+
+    constexpr StyleSpec styles[DelayEngine::numStyles] {
+        { 0.35f,  4500.0f,   0.0f, 1.0f,  0.7f, 0.03f,  7.3f, 0.4f, 0.0f },  // Studio Tape
+        { 0.45f,  6500.0f,  90.0f, 0.7f,  0.9f, 0.12f,  9.5f, 0.3f, 0.0f },  // Tape Echo: brighter, more flutter, harder
+        { 0.5f,   2800.0f,  60.0f, 0.25f, 0.4f, 0.05f, 11.0f, 0.5f, 0.0f },  // Bucket Brigade: dark and soft
+        { 0.7f,  20000.0f,   0.0f, 0.0f,  0.7f, 0.0f,   7.3f, 0.0f, 1.0f },  // Lo-Fi Digital: fewer bits at a lower rate
+        { 0.25f,  2600.0f, 450.0f, 0.0f,  0.7f, 0.0f,   7.3f, 0.0f, 0.0f },  // Telephone: narrow and clipped
+    };
 
     // Taps
     constexpr double tapFadeSeconds = 0.01, tapGainSeconds = 0.02, multiTapFadeSeconds = 0.02;
@@ -82,9 +98,15 @@ void DelayEngine::prepare (double newSampleRate, int maxBlockSize, int numChanne
     for (size_t ch = 0; ch < 2; ++ch)
         diffusers[ch].prepare (diffuserMs[ch], preDiffuserMs[ch], sampleRate);
 
+    for (auto& modulator : modulators)
+        modulator.prepare (sampleRate);
+
     diffusion.reset (sampleRate, 0.05);
+    shimmer.reset (sampleRate, 0.05);
+    modInLoop.reset (sampleRate, 0.05);
     multiTapAmount.reset (sampleRate, multiTapFadeSeconds);
     setTapestopTimeMs (500.0f);
+    setShimmerSemitones (shimmerSemitones);
 
     delaySmoothingSamples = -1; // forces the ramp length to be recalculated for this sample rate
     setDelaySmoothingMs (50.0f);
@@ -99,11 +121,13 @@ void DelayEngine::prepare (double newSampleRate, int maxBlockSize, int numChanne
     runawayAmount.reset (sampleRate, 0.08);
     runawayDrive.reset (sampleRate, 0.05);
 
+    for (auto* smoothed : { &styleCeiling, &styleDarkCoef, &styleThinOn, &styleThinCoef, &styleWowMs, &styleFlutterMs, &styleDrift, &styleLofi })
+        smoothed->reset (sampleRate, 0.05);
+
     dcCoef      = onePoleCoef (dcBlockHz, sampleRate);
-    darkCoefMin = onePoleCoef (darkestHz, sampleRate);
     driftCoef   = onePoleCoef (driftHz, sampleRate);
-    wowIncrement     = juce::MathConstants<float>::twoPi * wowHz / (float) sampleRate;
-    flutterIncrement = juce::MathConstants<float>::twoPi * flutterHz / (float) sampleRate;
+    lofiMaxHold = juce::jmax (1.0f, (float) (sampleRate / lofiMinRateHz));
+    setStyle (style); // the coefficients depend on the sample rate
     pingPongAmount.reset (sampleRate, 0.02);
     widthSamples.reset (sampleRate, 0.05);
 
@@ -137,20 +161,30 @@ void DelayEngine::reset()
     runawayAmount.setCurrentAndTargetValue (runawayAmount.getTargetValue());
     runawayDrive.setCurrentAndTargetValue (runawayDrive.getTargetValue());
 
+    for (auto* smoothed : { &styleCeiling, &styleDarkCoef, &styleThinOn, &styleThinCoef, &styleWowMs, &styleFlutterMs, &styleDrift, &styleLofi })
+        smoothed->setCurrentAndTargetValue (smoothed->getTargetValue());
+
     for (int ch = 0; ch < 2; ++ch)
-        dcState[ch] = darkState[ch] = 0.0f;
+        dcState[ch] = thinState[ch] = darkState[ch] = held[ch] = holdPhase[ch] = 0.0f;
 
     wowPhase = flutterPhase = drift = driftTarget = 0.0f;
     driftCountdown = 0;
 
     diffusion.setCurrentAndTargetValue (diffusion.getTargetValue());
+    shimmer.setCurrentAndTargetValue (shimmer.getTargetValue());
     head.reset();
 
     for (auto& network : diffusers)
         network.clear();
 
     diffusionActive = false;
-    diffusionRt60 = 0.0f; // forces the tail length to be recalculated
+    diffusionRt60 = 0.0f;     // forces the tail length to be recalculated
+    diffusionShimmer = -1.0f;
+
+    modInLoop.setCurrentAndTargetValue (modInLoop.getTargetValue());
+
+    for (auto& modulator : modulators)
+        modulator.reset();
 
     widthSamples.setCurrentAndTargetValue (widthSamples.getTargetValue());
 
@@ -208,6 +242,55 @@ void DelayEngine::setStereoWidthMs (float ms)
 void DelayEngine::setFeedback (float amount01) { feedback.setTargetValue (juce::jlimit (0.0f, 0.95f, amount01)); }
 void DelayEngine::setMix (float wet01)         { mix.setTargetValue (juce::jlimit (0.0f, 1.0f, wet01)); }
 
+void DelayEngine::setStyle (int styleIndex)
+{
+    style = juce::jlimit (0, numStyles - 1, styleIndex);
+    const auto& spec = styles[(size_t) style];
+
+    styleCeiling.setTargetValue (spec.minCeiling);
+    styleDarkCoef.setTargetValue (onePoleCoef (spec.darkestHz, sampleRate));
+    styleThinOn.setTargetValue (spec.thinHz > 0.0f ? 1.0f : 0.0f);
+
+    if (spec.thinHz > 0.0f)
+        styleThinCoef.setTargetValue (onePoleCoef (spec.thinHz, sampleRate));
+
+    styleWowMs.setTargetValue (spec.wowMs);
+    styleFlutterMs.setTargetValue (spec.flutterMs);
+    styleDrift.setTargetValue (spec.driftMix);
+    styleLofi.setTargetValue (spec.lofi);
+
+    // Rates change at once; the phases carry on, so nothing jumps.
+    wowIncrement     = juce::MathConstants<float>::twoPi * spec.wowHz / (float) sampleRate;
+    flutterIncrement = juce::MathConstants<float>::twoPi * spec.flutterHz / (float) sampleRate;
+}
+
+void DelayEngine::setShimmerSemitones (float semitones)
+{
+    shimmerSemitones = semitones;
+    const auto ratio = std::exp2 (semitones / 12.0f);
+
+    for (auto& network : diffusers)
+        network.setShimmerRatio (ratio);
+}
+
+void DelayEngine::setModulationType (int type)
+{
+    for (auto& modulator : modulators)
+        modulator.setType (static_cast<Modulator::Type> (juce::jlimit (0, Modulator::numTypes, type)));
+}
+
+void DelayEngine::setModulationRateHz (float hz)
+{
+    for (auto& modulator : modulators)
+        modulator.setRateHz (hz);
+}
+
+void DelayEngine::setModulationDepth (float amount01)
+{
+    for (auto& modulator : modulators)
+        modulator.setDepth (amount01);
+}
+
 void DelayEngine::setLowCutHz (float hz)
 {
     lowCutOn = hz > 0.0f;
@@ -263,18 +346,51 @@ float DelayEngine::reverberate (int channel, float echo)
     return diffusionCos * echo + diffusionSin * reverb;
 }
 
-float DelayEngine::tape (int channel, float sample, float amount, float ceiling, float darken)
+float DelayEngine::tape (int channel, float sample, const CharacterSettings& t)
 {
     dcState[channel] += dcCoef * (sample - dcState[channel]);
-    const auto blocked = sample - amount * dcState[channel];
+    auto x = sample - t.amount * dcState[channel];
 
-    const auto saturated = ceiling * std::tanh (blocked / ceiling);
-    const auto shaped = blocked + amount * (saturated - blocked);
+    // The thin styles lose their lows on every pass.
+    thinState[channel] += t.thinCoef * (x - thinState[channel]);
+    x -= t.thin * thinState[channel];
+
+    const auto saturated = t.ceiling * std::tanh (x / t.ceiling);
+    x += t.amount * (saturated - x);
+
+    if (t.lofi > 0.0f)
+    {
+        // Lo-Fi: hold each sample for a while (a lower sample rate), rounded
+        // towards zero to fewer bits. Towards zero, so a repeat below one step
+        // dies instead of looping at that step forever.
+        holdPhase[channel] += t.lofiHoldStep;
+
+        if (holdPhase[channel] >= 1.0f)
+        {
+            holdPhase[channel] -= 1.0f;
+            held[channel] = std::trunc (x * t.lofiSteps) / t.lofiSteps;
+        }
+
+        x += t.lofi * (held[channel] - x);
+    }
 
     // Coefficient 1 passes the sample straight through.
-    const auto coef = 1.0f - darken * (1.0f - darkCoefMin);
-    darkState[channel] += coef * (shaped - darkState[channel]);
+    darkState[channel] += t.darkCoef * (x - darkState[channel]);
     return darkState[channel];
+}
+
+float DelayEngine::syncedTapMs (float beats) const
+{
+    // Swing: within each beat the first half stretches and the second half
+    // shrinks, so at full Groove an off-beat eighth moves from halfway to two
+    // thirds (the triplet), and the sixteenths around it move with it.
+    const auto whole = std::floor (beats);
+    auto part = beats - whole;
+    const auto shift = groove / 6.0f;
+    part = part < 0.5f ? part * (1.0f + 2.0f * shift)
+                       : 0.5f + shift + (part - 0.5f) * (1.0f - 2.0f * shift);
+
+    return (float) ((double) (whole + part) * 60000.0 / tapsBpm) + feelMs;
 }
 
 void DelayEngine::process (juce::AudioBuffer<float>& buffer)
@@ -282,6 +398,7 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
     const auto numChannels = buffer.getNumChannels();
     const auto numSamples  = buffer.getNumSamples();
     const auto isStereo    = numChannels >= 2;
+    const auto msToSamples = (float) (0.001 * sampleRate);
 
     updateVoices (isStereo);
 
@@ -301,10 +418,28 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         const auto feedbackNow = feedback.getNextValue();
         const auto fb = feedbackNow * (1.0f - runaway) * (1.0f - handover)
                       + runaway * (runawayMinFeedback + runawayFeedbackRange * drive);
-        const auto tapeAmount = juce::jmax (wearNow, juce::jmin (1.0f, 2.0f * runaway));
-        const auto ceiling = (1.0f - (1.0f - wearMinCeiling) * wearNow) * (1.0f - runaway)
-                           + runaway * (runawayMaxCeiling - runawayCeilingRange * drive);
+
+        // The character stage, from Wear, Runaway and the (smoothed) style.
+        const auto minCeiling = styleCeiling.getNextValue();
+        const auto darkCoefMin = styleDarkCoef.getNextValue();
         const auto darken = juce::jmax (wearNow, 0.5f * runaway);
+
+        CharacterSettings character;
+        character.amount   = juce::jmax (wearNow, juce::jmin (1.0f, 2.0f * runaway));
+        character.ceiling  = (1.0f - (1.0f - minCeiling) * wearNow) * (1.0f - runaway)
+                         + runaway * (runawayMaxCeiling - runawayCeilingRange * drive);
+        character.darkCoef = 1.0f - darken * (1.0f - darkCoefMin);
+        character.thin     = wearNow * styleThinOn.getNextValue();
+        character.thinCoef = styleThinCoef.getNextValue();
+        character.lofi     = wearNow * styleLofi.getNextValue();
+        character.lofiHoldStep = character.lofiSteps = 1.0f;
+
+        if (character.lofi > 0.0f)
+        {
+            character.lofiHoldStep = 1.0f / (1.0f + character.lofi * (lofiMaxHold - 1.0f));
+            character.lofiSteps = std::exp2 (16.0f - character.lofi * (16.0f - lofiMinBits));
+        }
+
         const auto wet = mix.getNextValue();
         const auto send = inputSend.getNextValue();
         const auto pingPong = isStereo ? pingPongAmount.getNextValue() : 0.0f;
@@ -323,10 +458,10 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         if (wowPhase >= juce::MathConstants<float>::twoPi)     wowPhase -= juce::MathConstants<float>::twoPi;
         if (flutterPhase >= juce::MathConstants<float>::twoPi) flutterPhase -= juce::MathConstants<float>::twoPi;
 
-        const auto msToSamples = (float) (0.001 * sampleRate);
-        const auto wowDepth = wearNow * wearNow * maxWowMs * msToSamples;
-        const auto flutterDepth = wearNow * maxFlutterMs * msToSamples;
-        const auto modulation = (1.0f - frozen) * (wowDepth * (0.6f * std::sin (wowPhase) + 0.4f * drift)
+        const auto driftMix = styleDrift.getNextValue();
+        const auto wowDepth = wearNow * wearNow * styleWowMs.getNextValue() * msToSamples;
+        const auto flutterDepth = wearNow * styleFlutterMs.getNextValue() * msToSamples;
+        const auto modulation = (1.0f - frozen) * (wowDepth * ((1.0f - driftMix) * std::sin (wowPhase) + driftMix * drift)
                                                    + flutterDepth * std::sin (flutterPhase));
 
         // Whole-sample delay while frozen: repeated fractional interpolation
@@ -352,8 +487,11 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         }
 
         head.advance (d);
+
         // Diffusion blends the echoes into the reverb with an equal-power
         // crossfade. At 0 the reverb is out of the path; its tail is cleared.
+        const auto shimmerNow = shimmer.getNextValue() * maxShimmerSend;
+
         if (diffusionNow > 0.0f)
         {
             if (! diffusionActive || ! juce::exactlyEqual (diffusionNow, diffusionSetting))
@@ -370,16 +508,20 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
             const auto washRt60 = juce::jlimit (roomDiffusionRt60, maxDiffusionRt60, feedbackRt60);
             const auto rt60 = minDiffusionRt60 + (washRt60 - minDiffusionRt60) * handover;
 
-            // Recalculated when the tail length moves by more than 1%.
-            if (std::abs (rt60 - diffusionRt60) > 0.01f * diffusionRt60)
+            // Recalculated when the tail length moves by more than 1%, or Shimmer's feed by more than 0.01.
+            if (std::abs (rt60 - diffusionRt60) > 0.01f * diffusionRt60 || std::abs (shimmerNow - diffusionShimmer) > 0.01f)
             {
                 for (auto& network : diffusers)
-                    network.setDecay (rt60, diffusionHighRatio);
+                    network.setDecay (rt60, diffusionHighRatio, shimmerNow);
 
                 diffusionMakeup = diffusers[0].getMakeup();
 
                 diffusionRt60 = rt60;
+                diffusionShimmer = shimmerNow;
             }
+
+            for (auto& network : diffusers)
+                network.setShimmer (shimmerNow);
 
             diffusionActive = true;
         }
@@ -390,6 +532,12 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
             diffusionActive = false;
         }
+
+        // Modulation, in the loop and/or on the output; the position crossfades between the two.
+        const auto inLoopNow = modInLoop.getNextValue();
+        const auto loopMod = modulators[0].advance (inLoopNow);
+        const auto outMod  = modulators[1].advance (1.0f - inLoopNow);
+
         const auto tapeGain = head.getGain();
 
         // Taps read the line before the loop moves on, like the output head.
@@ -409,8 +557,10 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 const auto delayed = delayLine.popSample (ch, d);
 
                 const auto echo = filter (ch, delayed);
-                const auto normalWrite = tape (ch, send * dry + fb * (filtersInLoop ? echo : delayed),
-                                               tapeAmount, ceiling, darken);
+                auto normalWrite = tape (ch, send * dry + fb * (filtersInLoop ? echo : delayed), character);
+
+                if (loopMod)
+                    normalWrite = modulators[0].process (ch, normalWrite);
 
                 delayLine.pushSample (ch, normalWrite + frozen * (delayed - normalWrite));
 
@@ -421,7 +571,12 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 if (tapsRunning)
                     heardEcho += tapsMix * (tapFilter (ch, taps[0]) - heardEcho);
 
-                data[i] = dry * (1.0f - wet) + reverberate (ch, heardEcho) * wet;
+                heardEcho = reverberate (ch, heardEcho);
+
+                if (outMod)
+                    heardEcho = modulators[1].process (ch, heardEcho);
+
+                data[i] = dry * (1.0f - wet) + heardEcho * wet;
             }
 
             continue;
@@ -449,7 +604,11 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         for (int ch = 0; ch < 2; ++ch)
         {
             const auto mixed = normalWrite[ch] + pingPong * (pingPongWrite[ch] - normalWrite[ch]);
-            const auto write = tape (ch, mixed, tapeAmount, ceiling, darken);
+            auto write = tape (ch, mixed, character);
+
+            if (loopMod)
+                write = modulators[0].process (ch, write);
+
             delayLine.pushSample (ch, write + frozen * (frozenWrite[ch] - write));
         }
 
@@ -460,7 +619,12 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 heardEcho[ch] += tapsMix * (tapFilter (ch, taps[ch]) - heardEcho[ch]); // taps replace the main echo
 
         for (int ch = 0; ch < 2; ++ch)
+        {
             heardEcho[ch] = reverberate (ch, heardEcho[ch]);
+
+            if (outMod)
+                heardEcho[ch] = modulators[1].process (ch, heardEcho[ch]);
+        }
 
         widthDelayLine.pushSample (0, heardEcho[1]);
         const auto rightEcho = widthDelayLine.popSample (0, width);
@@ -564,7 +728,7 @@ void DelayEngine::updateVoices (bool isStereo)
         TapSettings settings;
         settings.uid       = voice.uid.load();
         settings.beats     = voice.beats.load();
-        settings.delayMs   = tapsSynced ? (float) (settings.beats * 60000.0 / tapsBpm) : voice.delayMs.load();
+        settings.delayMs   = tapsSynced ? syncedTapMs (settings.beats) : voice.delayMs.load();
         settings.gain      = voice.gain.load();
         settings.pan       = isStereo ? juce::jlimit (-1.0f, 1.0f, voice.pan.load()) : 0.0f;
         settings.semitones = voice.semitones.load();

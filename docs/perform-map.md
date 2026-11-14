@@ -66,13 +66,19 @@ Laid out for 4×4 pad controllers starting at 36.
 
 | CC | Control | CC | Control |
 |----|---------|----|---------|
-| 20 | Delay Time | 28 | Smoothing |
-| 21 | Feedback | 29 | Throw Level |
-| 22 | Mix | 30 | Freeze Fade |
-| 23 | Wear | 31 | Tapestop Time |
-| 24 | Diffusion | 85 | Runaway Drive |
-| 25 | Low Cut | 102 | Sync (≥ 64 on) |
-| 26 | High Cut | 103 | Ping-Pong |
-| 27 | Stereo Width | 104 | Input: Throw Only |
+| 20 | Delay Time | 31 | Tapestop Time |
+| 21 | Feedback | 32 | Shimmer |
+| 22 | Mix | 33 | Shimmer Pitch |
+| 23 | Wear | 34 | Modulation Rate |
+| 24 | Diffusion | 35 | Modulation Depth |
+| 25 | Low Cut | 36 | Feel |
+| 26 | High Cut | 37 | Groove |
+| 27 | Stereo Width | 85 | Runaway Drive |
+| 28 | Smoothing | 102 | Sync (≥ 64 on) |
+| 29 | Throw Level | 103 | Ping-Pong |
+| 30 | Freeze Fade | 104 | Input: Throw Only |
 | 64 | Sustain pedal: Freeze, held | 105 | Filter Position |
 |    |                             | 106 | Multi-Tap (≥ 64 on) |
+|    |                             | 107 | Modulation (type) |
+|    |                             | 108 | Modulation Position |
+|    |                             | 109 | Style |

@@ -26,9 +26,13 @@ namespace
             { 25, &Params::ID::lowCut },       { 26, &Params::ID::highCut },
             { 27, &Params::ID::stereoWidthMs }, { 28, &Params::ID::timeSmoothingMs },
             { 29, &Params::ID::throwLevelDb }, { 30, &Params::ID::freezeFadeMs },
+            { 32, &Params::ID::shimmer },      { 33, &Params::ID::shimmerPitch },
+            { 34, &Params::ID::modRate },      { 35, &Params::ID::modDepth },
+            { 36, &Params::ID::feelMs },       { 37, &Params::ID::groove },
             { 102, &Params::ID::sync },        { 103, &Params::ID::pingPong },
             { 104, &Params::ID::inputMode },   { 105, &Params::ID::filterPos },
-            { 106, &Params::ID::multiTap },
+            { 106, &Params::ID::multiTap },    { 107, &Params::ID::modType },
+            { 108, &Params::ID::modPos },      { 109, &Params::ID::style },
         };
         return map;
     }
@@ -66,6 +70,15 @@ EchoFactoryProcessor::EchoFactoryProcessor()
     wearParam         = apvts.getRawParameterValue (Params::ID::wear.getParamID());
     diffusionParam    = apvts.getRawParameterValue (Params::ID::diffusion.getParamID());
     multiTapParam     = apvts.getRawParameterValue (Params::ID::multiTap.getParamID());
+    styleParam        = apvts.getRawParameterValue (Params::ID::style.getParamID());
+    shimmerParam      = apvts.getRawParameterValue (Params::ID::shimmer.getParamID());
+    shimmerPitchParam = apvts.getRawParameterValue (Params::ID::shimmerPitch.getParamID());
+    modTypeParam      = apvts.getRawParameterValue (Params::ID::modType.getParamID());
+    modRateParam      = apvts.getRawParameterValue (Params::ID::modRate.getParamID());
+    modDepthParam     = apvts.getRawParameterValue (Params::ID::modDepth.getParamID());
+    modPosParam       = apvts.getRawParameterValue (Params::ID::modPos.getParamID());
+    feelParam         = apvts.getRawParameterValue (Params::ID::feelMs.getParamID());
+    grooveParam       = apvts.getRawParameterValue (Params::ID::groove.getParamID());
 
     for (size_t i = 0; i < gestureParams.size(); ++i)
         gestureParams[i] = apvts.getRawParameterValue (Params::getGestureIDs()[i]->getParamID());
@@ -320,7 +333,9 @@ float EchoFactoryProcessor::getTargetDelayMs() const
     if (syncParam->load() < 0.5f)
         return delayTimeParam->load();
 
-    return Params::divisionToMs (juce::roundToInt (syncDivisionParam->load()), hostBpm);
+    // Feel pushes synced echoes ahead of or behind the beat.
+    return juce::jlimit (Params::minDelayMs, Params::maxDelayMs,
+                         Params::divisionToMs (juce::roundToInt (syncDivisionParam->load()), hostBpm) + feelParam->load());
 }
 
 void EchoFactoryProcessor::updateEngineParameters()
@@ -348,14 +363,28 @@ void EchoFactoryProcessor::updateEngineParameters()
     engine.setPingPong (pingPongParam->load() >= 0.5f);
     engine.setStereoWidthMs (widthParam->load());
     engine.setWear (wearParam->load() * 0.01f);
+    engine.setStyle (juce::roundToInt (styleParam->load()));
     engine.setRunaway (isGestureOn (3));
     engine.setRunawayDrive (runawayDriveParam->load() * 0.01f);
     engine.setTapestopTimeMs (tapestopTimeParam->load());
     engine.setTapestop (isGestureOn (2));
     engine.setReverse (isGestureOn (4));
     engine.setDiffusion (diffusionParam->load() * 0.01f);
+    engine.setShimmer (shimmerParam->load() * 0.01f);
+
+    const auto& pitches = Params::getShimmerPitches();
+    const auto pitchIndex = juce::jlimit (0, (int) pitches.size() - 1, juce::roundToInt (shimmerPitchParam->load()));
+    engine.setShimmerSemitones ((float) pitches[(size_t) pitchIndex].semitones);
+
+    engine.setModulationType (juce::roundToInt (modTypeParam->load()));
+    engine.setModulationRateHz (modRateParam->load());
+    engine.setModulationDepth (modDepthParam->load() * 0.01f);
+    engine.setModulationInFeedbackLoop (juce::roundToInt (modPosParam->load()) == (int) Params::FilterPosition::inFeedbackLoop);
+
     engine.setMultiTap (multiTapParam->load() >= 0.5f);
     engine.setTapTempo (syncParam->load() >= 0.5f, hostBpm);
+    engine.setGroove (grooveParam->load() * 0.01f);
+    engine.setFeelMs (feelParam->load());
 }
 
 void EchoFactoryProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)

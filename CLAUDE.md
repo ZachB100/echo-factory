@@ -32,10 +32,12 @@ cmake --build build -j 10
   - **Warnings:** the build should produce none from `Source/`. JUCE's recommended warning flags are on.
   - **AU:** run `killall -9 AudioComponentRegistrar; auval -v aufx Ecfy Zbau`.
   - **Accessibility:** a manual VoiceOver pass in the Standalone app. osascript has no assistive access here, so the accessibility tree can't be inspected automatically.
+  - **Layout:** `cmake --build build --target EditorSnapshot && ./build/EditorSnapshot_artefacts/Debug/EditorSnapshot main.png taps.png` paints the editor to PNG files (plain, and with the Taps panel) without a host, a window or audio.
 
 ## Architecture
 
 - **Parameters** (`Source/Parameters.*`): the single source of truth for parameter IDs, ranges, defaults and value↔text functions.
+  - Parameters added after release carry a version hint (2 for Multi-Tap, 3 for Style, Shimmer, Modulation, Feel and Groove) and stay at the end of the layout. Choice parameters whose order the engine depends on (Style, Modulation type, Shimmer Pitch) are listed here in the engine's order.
   - The sync-division table has two names per entry: a short one for the screen and a spoken one for screen readers ("1/8D" vs "1/8 dotted").
   - `formatMilliseconds` and `formatFrequency` take a `spoken` flag and are shared by the parameter text and the UI.
   - Filter "Off" is the end of the range: Low Cut at its minimum and High Cut at its maximum. The processor maps those values to 0, which bypasses the filter in the engine.
@@ -46,7 +48,10 @@ cmake --build build -j 10
   - Stereo width is a separate short delay line on the right echo, applied on the output only, never in the feedback loop.
   - Freeze crossfades the write path to the buffer's own unfiltered output, and rounds the delay to whole samples while frozen.
   - Filters always run, even when bypassed, so switching them on doesn't click.
-  - Wear and Runaway both go through `DelayEngine::tape()` on the write path (the frozen path skips it). `tape()` applies a DC blocker, a `tanh` saturator with a ceiling, and one-pole darkening. Each is crossfaded by an amount, so Wear 0 is bit-exact clean. Wear also adds wow, flutter and random drift to the delay time, which fade out while frozen.
+  - Wear and Runaway both go through `DelayEngine::tape()` on the write path (the frozen path skips it). `tape()` applies a DC blocker, a one-pole low cut, a `tanh` saturator with a ceiling, Lo-Fi sample-and-hold with fewer bits, and one-pole darkening. Each is crossfaded by an amount, so Wear 0 is bit-exact clean. Wear also adds wow, flutter and random drift to the delay time, which fade out while frozen.
+    - The Style parameter picks what Wear does from the `styles` table in DelayEngine.cpp (ceiling, darkening cutoff, low cut, wow and flutter depths and rates, Lo-Fi). Studio Tape is the original character. The style's values are `SmoothedValue`s, so switching styles doesn't click; only the wow and flutter rates jump, and their phases carry on.
+    - Lo-Fi rounds towards zero, so a repeat below one step dies instead of looping at that step forever.
+  - Modulation (`Source/Modulation.*`, `Modulator`) is a chorus, flanger or phaser mixed half and half with the dry signal, so its gain never passes 1 and it's safe in the loop. There are two instances: one on the write path after `tape()` (skipped while frozen, like Wear), one on the heard echo after Diffusion. The position parameter crossfades between them. Each type has its own crossfade; `advance()` returns false when every crossfade is at 0, so Off is bit-exact and costs nothing. A modulator that has been off clears its line and allpasses when it starts again.
   - Tapestop, Reverse and Pitch live in `ReadHead` (`Source/ReadHead.*`), a read head with its own tape transport. The main output head is one `ReadHead`, and each multi-tap tap has its own. Pitch uses two heads sweeping a 50 ms window, crossfaded in, so 0 semitones is bit-exact. While reversed, pitch is done by speed instead: the reverse heads read back (1 + ratio) samples per sample. The window shifter on top of reverse would cancel it out, because at +12 the heads would stand still.
   - Tapestop runs on a second, non-advancing read head, which reads before the loop's `popSample`. It feeds the output only, through a separate copy of the filters (`outputFilter`). So the feedback loop and a frozen loop are never slowed.
     - When the stop completes, the output is silent. The head then jumps ahead by exactly what the spin-up will add, so it lands back on the loop. If you release early, a 50 ms splice brings it back instead.
@@ -55,6 +60,7 @@ cmake --build build -j 10
   - Diffusion is a reverb (`DiffusionNetwork`: a Jot feedback delay network with 16 lines, Hadamard mixing, 4 pre-diffusion allpasses, slow line modulation, and make-up gain to bring the level back to input level). It processes the heard echo after the loop, blended in equal power by angle Diffusion × 90°. It's never inside the loop, so it can have gain.
     - As Diffusion goes up, `handover` = Diffusion² scales down the delay's own feedback (Runaway is exempt). The reverb's RT60 moves from a 0.3 s room towards the decay the feedback would have given, 3·delay / −log10(fb), clamped to 2–20 s.
     - So at full Diffusion the delay feeds the reverb once, Feedback sets the reverb length, and no separate repeats remain. `makeupTrim` is measured by the "comes out at about input level" test, so re-measure it if the network changes.
+    - Shimmer feeds the network's previous output back into its input through a `PitchShifter` (`Source/PitchShifter.h`, the same two-head window scheme as `ReadHead`'s pitch, on its own line). The feed is trimmed below 150 Hz and above 8 kHz so repeated shifting can't pile up at either end, and soft-limited as a safety net. Its send is Shimmer × 0.6. `setDecay` takes the send and shortens the lines' own decay by send²/16 in energy, so the tail stays as long as Feedback says. Shimmer Pitch is a choice of intervals without 0 semitones, because an unshifted feed would be coherent with the lines and could build up.
   - Multi-tap: up to 16 taps (`DelayEngine::maxTaps`) replace the main echo, crossfaded by `multiTapAmount`. The loop keeps running at Delay Time with Feedback, so each tap repeats every delay time. Each tap is an output-only `ReadHead` on the same line. Each tap has its own time, level, pan, pitch and Reverse.
     - A tap reverses if its own switch is on or the global gesture is. The global Tapestop stops every tap. There's no per-tap Tapestop.
     - A tap reads the mono sum of the line.
@@ -62,7 +68,7 @@ cmake --build build -j 10
     - With Multi-Tap off, the taps aren't processed, so the output is bit-exact.
     - The 16 voices are preallocated. `setTaps` writes their settings as atomics, and the audio thread reads them once per block.
     - Each tap has a `uid`. A voice given a different uid fades out and back in, instead of gliding, which happens when a tap in the middle is removed.
-    - While synced, taps convert their beats to ms on the audio thread, so offline renders follow tempo.
+    - While synced, taps convert their beats to ms on the audio thread (`syncedTapMs`), so offline renders follow tempo. Groove swings them: within each beat the first half stretches and the second half shrinks, so at full an off-beat eighth lands on the triplet. Feel adds its milliseconds to every synced tap, and the processor adds it to the synced main delay too.
   - Runaway ramps feedback to 110–160% while pushing the saturator fully in. The loop stays bounded because the linear part of the loop gain stays below 1 throughout the ramp. The saturator comes in twice as fast as the feedback, so pressing Runaway can't overshoot. `tests/EngineTests.cpp` checks this.
 - **Performance** (`docs/perform-map.md` is the spec for keys and MIDI):
   - Each gesture (Throw, Freeze, Tapestop, Runaway, Reverse) is a bool parameter. Held versus latched only exists in the UI and MIDI layers.
@@ -94,8 +100,8 @@ cmake --build build -j 10
     - While it's open, the editor hides the main controls so screen readers can't reach them.
     - The close callback runs through `MessageManager::callAsync` because it deletes the dialog.
   - Keyboard focus is shown by `EchoFactoryEditor::paintOverChildren`, which is driven by a `FocusChangeListener`.
-  - Controls sit in `ui/ControlGroup` containers: Delay (with a nested Modes group for the toggles), Character, Filters and Gesture Settings. The preset bar and the Perform pad are outside the groups. Each group has the group role and is a focus container but not a keyboard focus container, so VoiceOver sees a nested tree while Tab still runs through every control. A group lays out its children in its own coordinates, and its bounds include the label strip, because attached labels live in the slider's parent.
-  - `ui/TapsPanel` is shown by Multi-Tap, and the editor widens from 860 to 1420. It's a "Taps" group with one "Tap N" group per tap, then Add Tap, in a viewport.
+  - Controls sit in `ui/ControlGroup` containers: Delay (with a nested Modes group for the toggles, plus Feel and Groove), Character (Style, Wear, Diffusion, Shimmer, Shimmer Pitch, Width), Filters, Modulation and Gesture Settings. The preset bar and the Perform pad are outside the groups. Each group has the group role and is a focus container but not a keyboard focus container, so VoiceOver sees a nested tree while Tab still runs through every control. A group lays out its children in its own coordinates, and its bounds include the label strip, because attached labels live in the slider's parent.
+  - `ui/TapsPanel` is shown by Multi-Tap, and the editor widens from 980 to 1540. It's a "Taps" group with one "Tap N" group per tap, then Add Tap, in a viewport.
     - Its focus number puts it straight after the Delay group.
     - Control titles carry the tap number ("Tap 2 Level").
     - Rows bind to the tree with `Value::referTo`.

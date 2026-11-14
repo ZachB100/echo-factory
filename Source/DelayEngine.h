@@ -2,6 +2,7 @@
 
 #include <juce_dsp/juce_dsp.h>
 #include "DiffusionNetwork.h"
+#include "Modulation.h"
 #include "ReadHead.h"
 
 /**
@@ -26,10 +27,12 @@
     Stereo width delays the right channel of the echoes by a few milliseconds,
     on the output only, so it doesn't build up in the feedback loop.
 
-    Wear adds tape character to the write path: a soft saturator with a
-    ceiling, gentle darkening on every pass, and wow and flutter on the delay
-    time. Each is crossfaded in by the Wear amount, so 0 is exactly the clean
-    delay. Wow and flutter fade out while frozen so the loop stays in time.
+    Wear adds character to the write path, as set by the Style: a soft
+    saturator with a ceiling, darkening on every pass, a low cut for the thin
+    styles, sample-and-hold and fewer bits for Lo-Fi, and wow and flutter on
+    the delay time. Each is crossfaded in by the Wear amount, so 0 is exactly
+    the clean delay in every style. Wow and flutter fade out while frozen so
+    the loop stays in time. Styles are smoothed, so switching doesn't click.
 
     Runaway raises feedback above 100% and pushes the saturator fully in. The
     saturator's ceiling keeps the loop bounded, and a DC blocker stops any
@@ -49,6 +52,14 @@
     full, the delay feeds the reverb once, so no separate repeats are left.
     The reverb is never inside the loop, so the loop can't run away.
 
+    Shimmer feeds the reverb's output back into it through a pitch shifter, so
+    the tail climbs by the shift on every pass. The reverb makes room for the
+    feed, so Feedback still sets how long the tail lasts.
+
+    Modulation is a chorus, flanger or phaser (Modulator), either on the write
+    path, where every repeat picks up more of it (skipped while frozen, like
+    Wear), or on the heard echoes after Diffusion. The position crossfades.
+
     Reverse also lives on the output head: two heads read backwards over
     segments one delay time long, half a segment apart, with sin² windows that
     always sum to 1. The loop is untouched, so a frozen loop plays backwards and
@@ -61,6 +72,10 @@
     repeats every delay time. The taps' sum goes through its own copy of the
     output filters, then into Diffusion and Width in place of the main echo.
     With Multi-tap off they aren't processed at all.
+
+    While synced, tap times come from their beats at the tempo, swung by Groove
+    (an off-beat eighth moves from halfway to two thirds of the beat at full)
+    and moved by Feel (milliseconds ahead of or behind the beat).
 */
 class DelayEngine
 {
@@ -76,6 +91,10 @@ public:
     };
 
     static constexpr int maxTaps = 16;
+
+    /** What Wear does. The first is the original tape character. */
+    enum class Style { studioTape = 0, tapeEcho, bucketBrigade, loFiDigital, telephone };
+    static constexpr int numStyles = 5;
 
     void prepare (double sampleRate, int maxBlockSize, int numChannels, float maxDelayMs, float maxWidthMs);
     void reset();
@@ -103,6 +122,7 @@ public:
     void setStereoWidthMs (float ms);
 
     void setWear (float amount01)          { wear.setTargetValue (juce::jlimit (0.0f, 1.0f, amount01)); }
+    void setStyle (int styleIndex);
     void setRunaway (bool shouldRunAway)   { runawayAmount.setTargetValue (shouldRunAway ? 1.0f : 0.0f); }
     void setRunawayDrive (float amount01)  { runawayDrive.setTargetValue (juce::jlimit (0.0f, 1.0f, amount01)); }
 
@@ -111,10 +131,24 @@ public:
     void setDiffusion (float amount01)     { diffusion.setTargetValue (juce::jlimit (0.0f, 1.0f, amount01)); }
     void setTapestopTimeMs (float ms);
 
+    void setShimmer (float amount01)       { shimmer.setTargetValue (juce::jlimit (0.0f, 1.0f, amount01)); }
+    void setShimmerSemitones (float semitones);
+
+    void setModulationType (int type);
+    void setModulationRateHz (float hz);
+    void setModulationDepth (float amount01);
+    void setModulationInFeedbackLoop (bool inLoop) { modInLoop.setTargetValue (inLoop ? 1.0f : 0.0f); }
+
     void setMultiTap (bool shouldUseTaps)  { multiTapAmount.setTargetValue (shouldUseTaps ? 1.0f : 0.0f); }
 
     /** While synced, tap times come from their beats at this tempo. */
     void setTapTempo (bool synced, double bpm) { tapsSynced = synced; tapsBpm = juce::jmax (1.0, bpm); }
+
+    /** Swing on synced taps, 0 to 1 (full moves an off-beat eighth to the triplet). */
+    void setGroove (float swing01)         { groove = juce::jlimit (0.0f, 1.0f, swing01); }
+
+    /** Milliseconds added to every synced tap time: negative is ahead of the beat. */
+    void setFeelMs (float ms)              { feelMs = ms; }
 
     /** Any thread; taps past maxTaps are ignored. */
     void setTaps (const std::vector<TapSettings>& taps);
@@ -122,6 +156,14 @@ public:
     void process (juce::AudioBuffer<float>& buffer);
 
 private:
+    /** The character stage's settings for one sample, shared by both channels. */
+    struct CharacterSettings
+    {
+        float amount, ceiling, darkCoef;  // saturation amount and ceiling; darkening one-pole coefficient (1 is off)
+        float thin, thinCoef;             // low cut amount and coefficient
+        float lofi, lofiHoldStep, lofiSteps; // sample-and-hold amount, its phase step, and quantisation steps
+    };
+
     float filter (int channel, float sample);
     float outputFilter (int channel, float sample);
 
@@ -131,8 +173,11 @@ private:
     /** The line read at a delay, clamped to what it holds. Call before the loop's popSample for this sample. */
     float readLine (int channel, float delay);
 
-    /** DC blocking, saturation and darkening, each scaled so 0 leaves the sample untouched. */
-    float tape (int channel, float sample, float amount, float ceiling, float darken);
+    /** DC blocking, low cut, saturation, lo-fi and darkening, each scaled so 0 leaves the sample untouched. */
+    float tape (int channel, float sample, const CharacterSettings&);
+
+    /** A synced tap's time, with Groove and Feel. */
+    float syncedTapMs (float beats) const;
 
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> delayLine;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> widthDelayLine;
@@ -146,9 +191,11 @@ private:
     double sampleRate = 44100.0;
     float maxDelaySamples = 1.0f, maxWidthSamples = 0.0f;
 
-    // Tape state
-    float dcState[2] {}, darkState[2] {};
-    float dcCoef = 0.0f, darkCoefMin = 1.0f;
+    // Character state. The style's settings are smoothed so switching styles doesn't click.
+    int style = 0;
+    juce::SmoothedValue<float> styleCeiling, styleDarkCoef, styleThinOn, styleThinCoef, styleWowMs, styleFlutterMs, styleDrift, styleLofi;
+    float dcState[2] {}, thinState[2] {}, darkState[2] {}, held[2] {}, holdPhase[2] {};
+    float dcCoef = 0.0f, lofiMaxHold = 1.0f;
     float wowPhase = 0.0f, flutterPhase = 0.0f, wowIncrement = 0.0f, flutterIncrement = 0.0f;
     float drift = 0.0f, driftTarget = 0.0f, driftCoef = 0.0f;
     int driftCountdown = 0;
@@ -158,6 +205,10 @@ private:
     ReadHead head;
     bool tapestopHeld = false, reverseHeld = false;
     float maxReadSamples = 1.0f, tapestopMs = 500.0f;
+
+    // Modulation: one on the write path, one on the output; the position crossfades between them.
+    std::array<Modulator, 2> modulators;
+    juce::SmoothedValue<float> modInLoop { 1.0f };
 
     // ---- Taps -----------------------------------------------------------------
     struct TapVoice
@@ -185,9 +236,12 @@ private:
     juce::SmoothedValue<float> multiTapAmount;
     bool tapsRunning = false, tapsSynced = false;
     double tapsBpm = 120.0;
+    float groove = 0.0f, feelMs = 0.0f;
     juce::dsp::StateVariableTPTFilter<float> lowCutTapFilter, highCutTapFilter;
 
     std::array<DiffusionNetwork, 2> diffusers;
-    float diffusionCos = 1.0f, diffusionSin = 0.0f, diffusionSetting = 0.0f, diffusionRt60 = 0.0f, diffusionMakeup = 1.0f;
+    juce::SmoothedValue<float> shimmer;
+    float shimmerSemitones = 12.0f;
+    float diffusionCos = 1.0f, diffusionSin = 0.0f, diffusionSetting = 0.0f, diffusionRt60 = 0.0f, diffusionShimmer = -1.0f, diffusionMakeup = 1.0f;
     bool diffusionActive = false;
 };
