@@ -32,6 +32,7 @@ cmake --build build -j 10
   - **Warnings:** the build should produce none from `Source/`. JUCE's recommended warning flags are on.
   - **AU:** run `killall -9 AudioComponentRegistrar; auval -v aufx Ecfy Zbau`.
   - **Accessibility:** a manual VoiceOver pass in the Standalone app. osascript has no assistive access here, so the accessibility tree can't be inspected automatically.
+  - **Layout:** `cmake --build build --target EditorSnapshot && ./build/EditorSnapshot_artefacts/Debug/EditorSnapshot main.png taps.png` paints the editor to PNG files (plain, and with the Taps panel) without a host, a window or audio.
 
 ## Architecture
 

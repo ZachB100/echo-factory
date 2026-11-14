@@ -68,6 +68,41 @@ target_link_libraries(EchoFactory
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
 
+# ---- Editor snapshot (not part of the default build) -----------------------
+#   Paints the editor to PNG files without a host, a window or audio, so the
+#   layout can be checked (or shown to someone) from the command line:
+#   cmake --build build --target EditorSnapshot && ./build/EditorSnapshot_artefacts/Debug/EditorSnapshot main.png taps.png
+juce_add_console_app(EditorSnapshot PRODUCT_NAME "EditorSnapshot")
+set_target_properties(EditorSnapshot PROPERTIES EXCLUDE_FROM_ALL TRUE)
+target_sources(EditorSnapshot
+    PRIVATE
+        tests/EditorSnapshot.cpp
+        Source/Parameters.cpp
+        Source/DelayEngine.cpp
+        Source/Modulation.cpp
+        Source/ReadHead.cpp
+        Source/Taps.cpp
+        Source/PresetManager.cpp
+        Source/PluginProcessor.cpp
+        Source/PluginEditor.cpp
+        Source/ui/PerformPad.cpp
+        Source/ui/PresetBar.cpp
+        Source/ui/SavePresetDialog.cpp
+        Source/ui/TapsPanel.cpp)
+target_include_directories(EditorSnapshot PRIVATE Source)
+target_compile_definitions(EditorSnapshot
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JucePlugin_Name="${EF_PRODUCT_NAME}")
+target_link_libraries(EditorSnapshot
+    PRIVATE
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+
 # ---- Offline engine tests (not part of the default build) ------------------
 #   cmake --build build --target EngineTests && ./build/EngineTests_artefacts/Debug/EngineTests
 juce_add_console_app(EngineTests PRODUCT_NAME "EngineTests")
