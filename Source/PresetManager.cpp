@@ -9,8 +9,14 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& state)
 
     // Sync divisions by index into Params::getSyncDivisions().
     constexpr float sixteenth = 4, eighth = 7, dottedEighth = 8, quarter = 10, dottedQuarter = 11, half = 13;
-    constexpr int tapSixteenth = 4, tapEighth = 7, tapDottedEighth = 8, tapDottedQuarter = 11;
-    constexpr float on = 1, throwOnly = (float) Params::InputMode::throwOnly;
+    constexpr int tapSixteenth = 4, tapEighth = 7, tapDottedEighth = 8, tapQuarter = 10, tapDottedQuarter = 11;
+    constexpr float on = 1, throwOnly = (float) Params::InputMode::throwOnly, outputOnly = (float) Params::FilterPosition::outputOnly;
+
+    // Styles by index into Params::getStyleNames(), modulation types into
+    // getModulationTypeNames(), shimmer pitches into getShimmerPitches().
+    constexpr float tapeEcho = 1, bucketBrigade = 2, loFiDigital = 3, telephone = 4;
+    constexpr float chorus = 1, flanger = 2, phaser = 3;
+    constexpr float octaveUp = 6, octaveAndFifthUp = 7;
 
     addFactoryPreset ("Init", "Every control at its default.", {});
 
@@ -71,6 +77,48 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& state)
                         Taps::makeTap (250, tapEighth, -3, 60),
                         Taps::makeTap (375, tapDottedEighth, -6, -30),
                         Taps::makeTap (750, tapDottedQuarter, -6, 30, 12) });
+
+    addFactoryPreset ("Swung Sixteenths", "Four taps a beat with a shuffle. Groove sets the swing.",
+                      { { &sync, on }, { &syncDivision, quarter }, { &multiTap, on }, { &groove, 66 }, { &feedback, 35 },
+                        { &mix, 40 }, { &highCut, 8000 } },
+                      { Taps::makeTap (125, tapSixteenth, -3, -40),
+                        Taps::makeTap (250, tapEighth, -3, 40),
+                        Taps::makeTap (375, tapDottedEighth, -6, -20),
+                        Taps::makeTap (500, tapQuarter, -2, 20) });
+
+    addFactoryPreset ("Shimmer Cathedral", "An octave-up reverb that blooms. Hold D to freeze it.",
+                      { { &delayTimeMs, 500 }, { &feedback, 70 }, { &mix, 45 }, { &diffusion, 100 }, { &shimmer, 70 },
+                        { &shimmerPitch, octaveUp }, { &stereoWidthMs, 25 }, { &lowCut, 100 }, { &highCut, 10000 } });
+
+    addFactoryPreset ("Fifths Shimmer", "A reverb climbing in fifths and octaves behind half-note echoes.",
+                      { { &sync, on }, { &syncDivision, half }, { &feedback, 60 }, { &mix, 40 }, { &diffusion, 85 },
+                        { &shimmer, 50 }, { &shimmerPitch, octaveAndFifthUp }, { &highCut, 9000 } });
+
+    addFactoryPreset ("Chorus Repeats", "Each repeat picks up more chorus.",
+                      { { &delayTimeMs, 380 }, { &feedback, 50 }, { &mix, 35 }, { &modType, chorus }, { &modRate, 0.5f },
+                        { &modDepth, 60 }, { &highCut, 8000 } });
+
+    addFactoryPreset ("Phaser Trails", "Dotted eighths that swirl deeper with every repeat.",
+                      { { &sync, on }, { &syncDivision, dottedEighth }, { &feedback, 55 }, { &mix, 35 }, { &modType, phaser },
+                        { &modRate, 0.25f }, { &modDepth, 75 } });
+
+    addFactoryPreset ("Flanged Ping-Pong", "Flanged echoes bouncing left and right. Shift and G latches reverse.",
+                      { { &sync, on }, { &syncDivision, eighth }, { &pingPong, on }, { &feedback, 45 }, { &mix, 35 },
+                        { &modType, flanger }, { &modRate, 0.15f }, { &modDepth, 80 }, { &modPos, outputOnly } });
+
+    addFactoryPreset ("Tape Echo Unit", "Bright, fluttery tape echo. Hold A to let it run away.",
+                      { { &delayTimeMs, 420 }, { &feedback, 50 }, { &mix, 35 }, { &style, tapeEcho }, { &wear, 55 },
+                        { &runawayDrive, 60 } });
+
+    addFactoryPreset ("Bucket Brigade", "Dark analog repeats that melt away. Left and right arrows bend the time.",
+                      { { &delayTimeMs, 320 }, { &timeSmoothingMs, 400 }, { &feedback, 55 }, { &mix, 35 },
+                        { &style, bucketBrigade }, { &wear, 60 } });
+
+    addFactoryPreset ("Lo-Fi Crush", "Eight-bit repeats that crumble.",
+                      { { &delayTimeMs, 250 }, { &feedback, 45 }, { &mix, 40 }, { &style, loFiDigital }, { &wear, 70 } });
+
+    addFactoryPreset ("Telephone Line", "Narrow, clipped repeats.",
+                      { { &delayTimeMs, 180 }, { &feedback, 50 }, { &mix, 40 }, { &style, telephone }, { &wear, 65 } });
 }
 
 void PresetManager::addFactoryPreset (const juce::String& name, const juce::String& hint,

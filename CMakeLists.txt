@@ -39,6 +39,7 @@ target_sources(EchoFactory
     PRIVATE
         Source/Parameters.cpp
         Source/DelayEngine.cpp
+        Source/Modulation.cpp
         Source/ReadHead.cpp
         Source/Taps.cpp
         Source/PresetManager.cpp
@@ -71,7 +72,7 @@ target_link_libraries(EchoFactory
 #   cmake --build build --target EngineTests && ./build/EngineTests_artefacts/Debug/EngineTests
 juce_add_console_app(EngineTests PRODUCT_NAME "EngineTests")
 set_target_properties(EngineTests PROPERTIES EXCLUDE_FROM_ALL TRUE)
-target_sources(EngineTests PRIVATE tests/EngineTests.cpp Source/DelayEngine.cpp Source/ReadHead.cpp)
+target_sources(EngineTests PRIVATE tests/EngineTests.cpp Source/DelayEngine.cpp Source/Modulation.cpp Source/ReadHead.cpp)
 target_include_directories(EngineTests PRIVATE Source)
 target_compile_definitions(EngineTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(EngineTests

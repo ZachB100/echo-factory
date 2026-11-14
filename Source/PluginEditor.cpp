@@ -38,10 +38,11 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
     tapsPanel.setExplicitFocusOrder (4);
     characterGroup.setExplicitFocusOrder (5);
     filtersGroup.setExplicitFocusOrder (6);
-    gestureGroup.setExplicitFocusOrder (7);
+    modulationGroup.setExplicitFocusOrder (7);
+    gestureGroup.setExplicitFocusOrder (8);
     modesGroup.setExplicitFocusOrder (3); // inside the Delay group, between Smoothing and Feedback
 
-    for (auto* group : { &delayGroup, &characterGroup, &filtersGroup, &gestureGroup })
+    for (auto* group : { &delayGroup, &characterGroup, &filtersGroup, &modulationGroup, &gestureGroup })
         addAndMakeVisible (group);
 
     addChildComponent (tapsPanel); // shown by Multi-Tap
@@ -143,26 +144,63 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
     mixSlider.setExplicitFocusOrder (5);
     mixAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::mix.getParamID(), mixSlider);
 
+    // ---- Feel / Groove ---------------------------------------------------
+    setupSlider (delayGroup, feelSlider, feelLabel, "Feel",
+                 "Moves synced echoes and taps ahead of or behind the beat, minus 50 to plus 50 milliseconds. Only while synced.");
+    feelSlider.spokenTextFromValue = [] (double v) { return Params::formatSignedMilliseconds ((float) v, true); };
+    feelSlider.setDoubleClickReturnValue (true, 0.0);
+    feelSlider.setExplicitFocusOrder (6);
+    feelAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::feelMs.getParamID(), feelSlider);
+
+    setupPercentSlider (delayGroup, grooveSlider, grooveLabel, "Groove",
+                        "Swing on synced taps, 0 to 100 percent. At full, an off-beat eighth moves to the triplet. "
+                        "Only while synced, with Multi-Tap on.");
+    grooveSlider.setExplicitFocusOrder (7);
+    grooveAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::groove.getParamID(), grooveSlider);
+
+    // ---- Style -----------------------------------------------------------
+    setupComboBox (characterGroup, styleBox, styleLabel, "Style",
+                   "What Wear sounds like: Studio Tape, Tape Echo, Bucket Brigade, Lo-Fi Digital or Telephone.",
+                   Params::getStyleNames());
+    styleBox.setExplicitFocusOrder (1);
+    styleAttachment = std::make_unique<ComboBoxAttachment> (p.apvts, Params::ID::style.getParamID(), styleBox);
+
     // ---- Wear ------------------------------------------------------------
     setupPercentSlider (characterGroup, wearSlider, wearLabel, "Wear",
-                        "Tape wear, 0 to 100 percent: saturation, darkening and wow and flutter on the echoes, "
+                        "Wear, 0 to 100 percent: saturation, tone and wobble in the chosen Style, "
                         "building up with each repeat. At 0 the delay is clean.");
-    wearSlider.setExplicitFocusOrder (1);
+    wearSlider.setExplicitFocusOrder (2);
     wearAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::wear.getParamID(), wearSlider);
 
     // ---- Diffusion -------------------------------------------------------
     setupPercentSlider (characterGroup, diffusionSlider, diffusionLabel, "Diffusion",
                         "Turns the echoes into a reverb, 0 to 100 percent. At full there are no separate repeats, "
                         "and Feedback sets how long the reverb lasts. Combine with Freeze for pads. At 0 the echoes are clean.");
-    diffusionSlider.setExplicitFocusOrder (2);
+    diffusionSlider.setExplicitFocusOrder (3);
     diffusionAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::diffusion.getParamID(), diffusionSlider);
+
+    // ---- Shimmer ---------------------------------------------------------
+    setupPercentSlider (characterGroup, shimmerSlider, shimmerLabel, "Shimmer",
+                        "Feeds the Diffusion reverb back into itself through a pitch shifter, 0 to 100 percent, "
+                        "so the tail climbs by Shimmer Pitch on every pass. Needs Diffusion above 0.");
+    shimmerSlider.setExplicitFocusOrder (4);
+    shimmerAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::shimmer.getParamID(), shimmerSlider);
+
+    juce::StringArray pitchNames;
+    for (const auto& pitch : Params::getShimmerPitches())
+        pitchNames.add (pitch.name);
+
+    setupComboBox (characterGroup, shimmerPitchBox, shimmerPitchLabel, "Shimmer Pitch",
+                   "How far each pass through the reverb shifts, from an octave down to two octaves up.", pitchNames);
+    shimmerPitchBox.setExplicitFocusOrder (5);
+    shimmerPitchAttachment = std::make_unique<ComboBoxAttachment> (p.apvts, Params::ID::shimmerPitch.getParamID(), shimmerPitchBox);
 
     // ---- Stereo width ----------------------------------------------------
     setupSlider (characterGroup, widthSlider, widthLabel, "Stereo Width",
                  "Delays the right channel of the echoes by 0 to 100 milliseconds to widen them. "
                  "Does not affect the dry signal. Stereo only.");
     widthSlider.spokenTextFromValue = [] (double v) { return Params::formatMilliseconds ((float) v, true); };
-    widthSlider.setExplicitFocusOrder (3);
+    widthSlider.setExplicitFocusOrder (6);
     widthAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::stereoWidthMs.getParamID(), widthSlider);
 
     // ---- Filters ---------------------------------------------------------
@@ -178,31 +216,40 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
     highCutSlider.setExplicitFocusOrder (2);
     highCutAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::highCut.getParamID(), highCutSlider);
 
-    filterPosLabel.setText ("Filter Position", juce::dontSendNotification);
-    filterPosLabel.setJustificationType (juce::Justification::centred);
-    filterPosLabel.attachToComponent (&filterPosBox, false);
-    filterPosLabel.setAccessible (false);
-    filterPosBox.addItemList (Params::getFilterPositionNames(), 1);
-    filterPosBox.setTitle ("Filter Position");
-    filterPosBox.setDescription ("In Feedback Loop filters every repeat, so echoes get progressively darker or thinner. "
-                                 "Output Only filters the echoes once, without changing the feedback.");
-    filterPosBox.setWantsKeyboardFocus (true);
+    setupComboBox (filtersGroup, filterPosBox, filterPosLabel, "Filter Position",
+                   "In Feedback Loop filters every repeat, so echoes get progressively darker or thinner. "
+                   "Output Only filters the echoes once, without changing the feedback.",
+                   Params::getFilterPositionNames());
     filterPosBox.setExplicitFocusOrder (3);
-    filtersGroup.addAndMakeVisible (filterPosBox);
     filterPosAttachment = std::make_unique<ComboBoxAttachment> (p.apvts, Params::ID::filterPos.getParamID(), filterPosBox);
 
+    // ---- Modulation ------------------------------------------------------
+    setupComboBox (modulationGroup, modTypeBox, modTypeLabel, "Modulation",
+                   "Chorus, flanger or phaser on the echoes, or off.", Params::getModulationTypeNames());
+    modTypeBox.setExplicitFocusOrder (1);
+    modTypeAttachment = std::make_unique<ComboBoxAttachment> (p.apvts, Params::ID::modType.getParamID(), modTypeBox);
+
+    setupComboBox (modulationGroup, modPosBox, modPosLabel, "Modulation Position",
+                   "In Feedback Loop modulates every repeat, so echoes get thicker or swirlier each time. "
+                   "Output Only modulates the echoes once.",
+                   Params::getFilterPositionNames());
+    modPosBox.setExplicitFocusOrder (2);
+    modPosAttachment = std::make_unique<ComboBoxAttachment> (p.apvts, Params::ID::modPos.getParamID(), modPosBox);
+
+    setupSlider (modulationGroup, modRateSlider, modRateLabel, "Modulation Rate", "Speed of the modulation, 0.05 to 8 hertz.");
+    modRateSlider.spokenTextFromValue = [] (double v) { return Params::formatHertz ((float) v, true); };
+    modRateSlider.setExplicitFocusOrder (3);
+    modRateAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::modRate.getParamID(), modRateSlider);
+
+    setupPercentSlider (modulationGroup, modDepthSlider, modDepthLabel, "Modulation Depth", "How far the modulation sweeps, 0 to 100 percent.");
+    modDepthSlider.setExplicitFocusOrder (4);
+    modDepthAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::modDepth.getParamID(), modDepthSlider);
+
     // ---- Perform settings ------------------------------------------------
-    inputModeLabel.setText ("Input", juce::dontSendNotification);
-    inputModeLabel.setJustificationType (juce::Justification::centred);
-    inputModeLabel.attachToComponent (&inputModeBox, false);
-    inputModeLabel.setAccessible (false);
-    inputModeBox.addItemList (Params::getInputModeNames(), 1);
-    inputModeBox.setTitle ("Input");
-    inputModeBox.setDescription ("Always sends the input into the delay. "
-                                 "Throw Only sends it in only while Throw is held or latched.");
-    inputModeBox.setWantsKeyboardFocus (true);
+    setupComboBox (gestureGroup, inputModeBox, inputModeLabel, "Input",
+                   "Always sends the input into the delay. Throw Only sends it in only while Throw is held or latched.",
+                   Params::getInputModeNames());
     inputModeBox.setExplicitFocusOrder (1);
-    gestureGroup.addAndMakeVisible (inputModeBox);
     inputModeAttachment = std::make_unique<ComboBoxAttachment> (p.apvts, Params::ID::inputMode.getParamID(), inputModeBox);
 
     setupSlider (gestureGroup, throwLevelSlider, throwLevelLabel, "Throw Level",
@@ -306,6 +353,21 @@ void EchoFactoryEditor::setupFrequencySlider (ControlGroup& group, AccessibleSli
     slider.spokenTextFromValue = [offHz] (double v) { return Params::formatFrequency ((float) v, offHz, true); };
 }
 
+void EchoFactoryEditor::setupComboBox (ControlGroup& group, juce::ComboBox& box, juce::Label& label, const juce::String& name,
+                                      const juce::String& description, const juce::StringArray& items)
+{
+    label.setText (name, juce::dontSendNotification);
+    label.setJustificationType (juce::Justification::centred);
+    label.attachToComponent (&box, false);
+    label.setAccessible (false);
+
+    box.addItemList (items, 1);
+    box.setTitle (name);
+    box.setDescription (description);
+    box.setWantsKeyboardFocus (true);
+    group.addAndMakeVisible (box);
+}
+
 void EchoFactoryEditor::updateTimeControlForSync (bool synced)
 {
     if (timeAttachment != nullptr && synced == showingSyncDivisions)
@@ -371,7 +433,8 @@ void EchoFactoryEditor::showSaveDialog()
 void EchoFactoryEditor::setMainControlsVisible (bool shouldBeVisible)
 {
     // The groups take their controls and labels with them.
-    for (auto* c : std::initializer_list<juce::Component*> { &presetBar, &performPad, &delayGroup, &characterGroup, &filtersGroup, &gestureGroup })
+    for (auto* c : std::initializer_list<juce::Component*> { &presetBar, &performPad, &delayGroup, &characterGroup,
+                                                              &filtersGroup, &modulationGroup, &gestureGroup })
         c->setVisible (shouldBeVisible);
 
     tapsPanel.setVisible (shouldBeVisible && tapsVisible);
@@ -410,11 +473,10 @@ void EchoFactoryEditor::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
     g.drawText ("ECHO FACTORY", getLocalBounds().removeFromTop (48).reduced (16, 0), juce::Justification::centredLeft);
 
-    // Dividers above the character/filter row and the perform row.
+    // Dividers between the rows.
     g.setColour (Colours::topBar);
 
-    // The wear label is positioned inside its group.
-    for (auto dividerY : { (float) (characterGroup.getY() + wearLabel.getY()) - 10.0f, (float) performPad.getY() - 10.0f })
+    for (auto dividerY : { (float) characterGroup.getY() - 4.0f, (float) filtersGroup.getY() - 4.0f, (float) performPad.getY() - 6.0f })
         g.drawLine (16.0f, dividerY, (float) mainWidth - 16.0f, dividerY, 1.5f);
 
     // And between the main controls and the Taps panel.
@@ -453,14 +515,16 @@ void EchoFactoryEditor::resized()
 
     // Each group spans its row including the label strip above its controls,
     // and lays its children out in its own coordinates.
+    const auto knob = [] (juce::Rectangle<int>& row, int width) { return row.removeFromLeft (width).reduced (6, 0); };
+    const auto box  = [] (juce::Rectangle<int> column) { return column.withSizeKeepingCentre (column.getWidth() - 12, 30); };
 
-    // Row 1: delay controls
-    delayGroup.setBounds (area.removeFromTop (area.getHeight() / 3).withTrimmedBottom (8));
+    // Row 1: delay controls, seven columns
+    delayGroup.setBounds (area.removeFromTop (delayRowHeight).withTrimmedBottom (8));
     auto row1 = delayGroup.getLocalBounds().withTrimmedTop (24); // room for labels
-    const auto columnWidth = row1.getWidth() / 5;
+    const auto columnWidth = row1.getWidth() / 7;
 
-    timeSlider.setBounds (row1.removeFromLeft (columnWidth).reduced (6, 0));
-    smoothingSlider.setBounds (row1.removeFromLeft (columnWidth).reduced (6, 0));
+    timeSlider.setBounds (knob (row1, columnWidth));
+    smoothingSlider.setBounds (knob (row1, columnWidth));
     modesGroup.setBounds (row1.removeFromLeft (columnWidth).withSizeKeepingCentre (columnWidth - 12, 152));
     auto toggles = modesGroup.getLocalBounds();
     syncButton.setBounds (toggles.removeFromTop (40));
@@ -470,36 +534,53 @@ void EchoFactoryEditor::resized()
         toggles.removeFromTop (2);
         toggle->setBounds (toggles.removeFromTop (34));
     }
-    feedbackSlider.setBounds (row1.removeFromLeft (columnWidth).reduced (6, 0));
-    mixSlider.setBounds (row1.reduced (6, 0));
 
-    // Row 2: character (three columns) and filters (three columns)
-    auto row2 = area.removeFromTop (area.getHeight() / 2).withTrimmedTop (8).withTrimmedBottom (8); // separator line
+    feedbackSlider.setBounds (knob (row1, columnWidth));
+    mixSlider.setBounds (knob (row1, columnWidth));
+    feelSlider.setBounds (knob (row1, columnWidth));
+    grooveSlider.setBounds (row1.reduced (6, 0));
+
+    // Row 2: character, six columns
+    characterGroup.setBounds (area.removeFromTop (rowHeight).withTrimmedTop (8).withTrimmedBottom (8));
+    auto row2 = characterGroup.getLocalBounds().withTrimmedTop (24);
     const auto row2Column = row2.getWidth() / 6;
 
-    characterGroup.setBounds (row2.removeFromLeft (row2Column * 3));
-    auto character = characterGroup.getLocalBounds().withTrimmedTop (24);
-    wearSlider.setBounds (character.removeFromLeft (row2Column).reduced (6, 0));
-    diffusionSlider.setBounds (character.removeFromLeft (row2Column).reduced (6, 0));
-    widthSlider.setBounds (character.reduced (6, 0));
+    styleBox.setBounds (box (row2.removeFromLeft (row2Column)));
+    wearSlider.setBounds (knob (row2, row2Column));
+    diffusionSlider.setBounds (knob (row2, row2Column));
+    shimmerSlider.setBounds (knob (row2, row2Column));
+    shimmerPitchBox.setBounds (box (row2.removeFromLeft (row2Column)));
+    widthSlider.setBounds (row2.reduced (6, 0));
 
-    filtersGroup.setBounds (row2);
+    // Row 3: filters (three columns) and modulation (three columns)
+    auto row3 = area.removeFromTop (rowHeight).withTrimmedTop (8).withTrimmedBottom (8);
+    const auto row3Column = row3.getWidth() / 6;
+
+    filtersGroup.setBounds (row3.removeFromLeft (row3Column * 3));
     auto filters = filtersGroup.getLocalBounds().withTrimmedTop (24);
-    lowCutSlider.setBounds (filters.removeFromLeft (row2Column).reduced (6, 0));
-    highCutSlider.setBounds (filters.removeFromLeft (row2Column).reduced (6, 0));
-    filterPosBox.setBounds (filters.withSizeKeepingCentre (juce::jmin (filters.getWidth() - 12, 200), 30));
+    lowCutSlider.setBounds (knob (filters, row3Column));
+    highCutSlider.setBounds (knob (filters, row3Column));
+    filterPosBox.setBounds (box (filters));
 
-    // Row 3: perform pad and its settings, in seven columns
-    auto row3 = area.withTrimmedTop (12).withTrimmedBottom (8);
-    const auto performColumn = row3.getWidth() / 7;
+    modulationGroup.setBounds (row3);
+    auto modulation = modulationGroup.getLocalBounds().withTrimmedTop (24);
+    auto boxes = modulation.removeFromLeft (row3Column).reduced (6, 0); // type over position, each with its label above
+    modTypeBox.setBounds (boxes.removeFromTop (boxes.getHeight() / 2).withSizeKeepingCentre (boxes.getWidth(), 30));
+    modPosBox.setBounds (boxes.withSizeKeepingCentre (boxes.getWidth(), 30));
+    modRateSlider.setBounds (knob (modulation, row3Column));
+    modDepthSlider.setBounds (modulation.reduced (6, 0));
 
-    performPad.setBounds (row3.removeFromLeft (performColumn * 2).reduced (6, 0));
-    gestureGroup.setBounds (row3);
+    // Row 4: perform pad and its settings, in seven columns
+    auto row4 = area.withTrimmedTop (12).withTrimmedBottom (8);
+    const auto performColumn = row4.getWidth() / 7;
+
+    performPad.setBounds (row4.removeFromLeft (performColumn * 2).reduced (6, 0));
+    gestureGroup.setBounds (row4);
     auto settings = gestureGroup.getLocalBounds().withTrimmedTop (20); // labels
-    throwLevelSlider.setBounds (settings.removeFromLeft (performColumn).reduced (6, 0));
-    freezeFadeSlider.setBounds (settings.removeFromLeft (performColumn).reduced (6, 0));
-    tapestopTimeSlider.setBounds (settings.removeFromLeft (performColumn).reduced (6, 0));
-    runawayDriveSlider.setBounds (settings.removeFromLeft (performColumn).reduced (6, 0));
+    throwLevelSlider.setBounds (knob (settings, performColumn));
+    freezeFadeSlider.setBounds (knob (settings, performColumn));
+    tapestopTimeSlider.setBounds (knob (settings, performColumn));
+    runawayDriveSlider.setBounds (knob (settings, performColumn));
     auto lastColumn = settings.reduced (6, 0);
     inputModeBox.setBounds (lastColumn.removeFromTop (lastColumn.getHeight() / 2).withSizeKeepingCentre (lastColumn.getWidth(), 30));
     resetButton.setBounds (lastColumn.withSizeKeepingCentre (lastColumn.getWidth(), 34));
