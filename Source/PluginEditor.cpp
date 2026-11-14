@@ -17,6 +17,9 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
     setTitle ("Echo Factory");
     setDescription ("Echo Factory delay by ZBAudio");
     setFocusContainerType (FocusContainerType::keyboardFocusContainer);
+    // Host/standalone traversal stops at a keyboard focus container. It must
+    // itself accept focus so keyboard-only entry can reach the controls.
+    setWantsKeyboardFocus (true);
 
     auto& lf = getLookAndFeel();
     lf.setColour (juce::Slider::rotarySliderFillColourId, Colours::accent);
@@ -255,7 +258,6 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
     p.apvts.state.addListener (this);
     juce::Desktop::getInstance().addFocusChangeListener (this);
 
-    setWantsKeyboardFocus (false);
     setResizable (false, false);
     setSize (mainWidth, editorHeight);
 
@@ -264,6 +266,15 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
         *p.apvts.getParameter (Params::ID::multiTap.getParamID()),
         [this] (float value) { setTapsVisible (value >= 0.5f); });
     multiTapWatcher->sendInitialUpdate();
+}
+
+void EchoFactoryEditor::focusGained (FocusChangeType)
+{
+    // Only hand off when focus enters the editor, never on activation or a timer:
+    // this preserves host focus and JUCE's restoration of the last focused child.
+    if (auto traverser = createKeyboardFocusTraverser())
+        if (auto* first = traverser->getDefaultComponent (this))
+            first->grabKeyboardFocus();
 }
 
 EchoFactoryEditor::~EchoFactoryEditor()
