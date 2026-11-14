@@ -44,6 +44,20 @@ juce_add_plugin(EchoFactory
     NEEDS_WEB_BROWSER        FALSE
     NEEDS_CURL               FALSE)
 
+# JUCE signs the VST3 bundle before it writes moduleinfo.json into it, and only
+# the copy-after-build step signs it again. Without that step the signature no
+# longer matches and Live's scanner rejects the plug-in ("a sealed resource is
+# missing or invalid"). JUCE's script replaces only an invalid signature, so
+# this leaves a real (Developer ID) signature alone. It runs after the
+# moduleinfo step because POST_BUILD commands run in the order they're added.
+if(APPLE)
+    add_custom_command(TARGET EchoFactory_VST3 POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+            "-Dsrc=$<TARGET_BUNDLE_DIR:EchoFactory_VST3>"
+            "-P" "${JUCE_CMAKE_UTILS_DIR}/checkBundleSigning.cmake"
+        VERBATIM)
+endif()
+
 # Windows needs an explicit initial focus handoff after showing the native window.
 # Keep the plugin wrapper and other platforms on their existing entry points.
 if(WIN32)

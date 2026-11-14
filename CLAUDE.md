@@ -23,7 +23,7 @@ cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j 10
 ```
 
-- `COPY_PLUGIN_AFTER_BUILD` installs the AU and VST3 into `~/Library/Audio/Plug-Ins`.
+- `COPY_PLUGIN_AFTER_BUILD` installs the AU and VST3 into `~/Library/Audio/Plug-Ins`. It's set by `EF_COPY_PLUGIN_AFTER_BUILD`, which is on by default on macOS. With it off, a post-build step in `CMakeLists.txt` signs the VST3 again after `moduleinfo.json` is written. Without that step the bundle's signature is broken and Live rejects it.
 - The Standalone app is at `build/EchoFactory_artefacts/Debug/Standalone/Echo Factory.app`.
 - The Standalone app has no host tempo, so tempo sync falls back to 120 BPM there.
 - The Standalone app needs `MICROPHONE_PERMISSION_ENABLED`, because otherwise macOS silently gives it zero input. It's ad-hoc signed, so macOS may ask for mic access again after a rebuild.
