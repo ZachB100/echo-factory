@@ -29,10 +29,14 @@ namespace
             { 32, &Params::ID::shimmer },      { 33, &Params::ID::shimmerPitch },
             { 34, &Params::ID::modRate },      { 35, &Params::ID::modDepth },
             { 36, &Params::ID::feelMs },       { 37, &Params::ID::groove },
+            { 38, &Params::ID::brandonFeedback }, { 39, &Params::ID::brandonOrbit },
+            { 40, &Params::ID::brandonCrush }, { 41, &Params::ID::brandonPitch },
+            { 42, &Params::ID::brandonChaos },
             { 102, &Params::ID::sync },        { 103, &Params::ID::pingPong },
             { 104, &Params::ID::inputMode },   { 105, &Params::ID::filterPos },
             { 106, &Params::ID::multiTap },    { 107, &Params::ID::modType },
             { 108, &Params::ID::modPos },      { 109, &Params::ID::style },
+            { 110, &Params::ID::brandon },
         };
         return map;
     }
@@ -79,6 +83,12 @@ EchoFactoryProcessor::EchoFactoryProcessor()
     modPosParam       = apvts.getRawParameterValue (Params::ID::modPos.getParamID());
     feelParam         = apvts.getRawParameterValue (Params::ID::feelMs.getParamID());
     grooveParam       = apvts.getRawParameterValue (Params::ID::groove.getParamID());
+    brandonParam         = apvts.getRawParameterValue (Params::ID::brandon.getParamID());
+    brandonFeedbackParam = apvts.getRawParameterValue (Params::ID::brandonFeedback.getParamID());
+    brandonOrbitParam    = apvts.getRawParameterValue (Params::ID::brandonOrbit.getParamID());
+    brandonCrushParam    = apvts.getRawParameterValue (Params::ID::brandonCrush.getParamID());
+    brandonPitchParam    = apvts.getRawParameterValue (Params::ID::brandonPitch.getParamID());
+    brandonChaosParam    = apvts.getRawParameterValue (Params::ID::brandonChaos.getParamID());
 
     for (size_t i = 0; i < gestureParams.size(); ++i)
         gestureParams[i] = apvts.getRawParameterValue (Params::getGestureIDs()[i]->getParamID());
@@ -385,6 +395,13 @@ void EchoFactoryProcessor::updateEngineParameters()
     engine.setTapTempo (syncParam->load() >= 0.5f, hostBpm);
     engine.setGroove (grooveParam->load() * 0.01f);
     engine.setFeelMs (feelParam->load());
+
+    engine.setBrandon (brandonParam->load() >= 0.5f);
+    engine.setBrandonFeedback (brandonFeedbackParam->load() * 0.01f);
+    engine.setBrandonOrbit (brandonOrbitParam->load() * 0.01f);
+    engine.setBrandonCrush (brandonCrushParam->load() * 0.01f);
+    engine.setBrandonPitch (brandonPitchParam->load() * 0.01f);
+    engine.setBrandonChaos (brandonChaosParam->load() * 0.01f);
 }
 
 void EchoFactoryProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)

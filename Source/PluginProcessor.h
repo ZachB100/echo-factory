@@ -127,6 +127,12 @@ private:
     std::atomic<float>* modPosParam       = nullptr;
     std::atomic<float>* feelParam         = nullptr;
     std::atomic<float>* grooveParam       = nullptr;
+    std::atomic<float>* brandonParam         = nullptr;
+    std::atomic<float>* brandonFeedbackParam = nullptr;
+    std::atomic<float>* brandonOrbitParam    = nullptr;
+    std::atomic<float>* brandonCrushParam    = nullptr;
+    std::atomic<float>* brandonPitchParam    = nullptr;
+    std::atomic<float>* brandonChaosParam    = nullptr;
 
     double hostBpm = 120.0;
 

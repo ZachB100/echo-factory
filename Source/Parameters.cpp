@@ -361,6 +361,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 
     layout.add (std::make_unique<AudioParameterFloat> (ID::groove, "Groove", percentRange, 0.0f, percentAttributes()));
 
+    // Brandon: the chaos mode. Its feedback replaces Feedback while it's on.
+    layout.add (std::make_unique<AudioParameterBool> (ID::brandon, "Brandon", false, onOffAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ID::brandonFeedback, "Brandon Feedback", NormalisableRange<float> { 0.0f, 95.0f, 0.1f }, brandonDefaultPercent, percentAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::brandonOrbit, "Brandon Orbit", percentRange, brandonDefaultPercent, percentAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::brandonCrush, "Brandon Crush", percentRange, brandonDefaultPercent, percentAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::brandonPitch, "Brandon Pitch", percentRange, brandonDefaultPercent, percentAttributes()));
+    layout.add (std::make_unique<AudioParameterFloat> (ID::brandonChaos, "Brandon Chaos", percentRange, brandonDefaultPercent, percentAttributes()));
+
     return layout;
 }
 }

@@ -48,6 +48,14 @@ namespace Params
         inline const juce::ParameterID modPos       { "modPos",       3 };
         inline const juce::ParameterID feelMs       { "feelMs",       3 };
         inline const juce::ParameterID groove       { "groove",       3 };
+
+        // Added after release: version hint 4. Brandon, the chaos mode, and its controls.
+        inline const juce::ParameterID brandon         { "brandon",         4 };
+        inline const juce::ParameterID brandonFeedback { "brandonFeedback", 4 };
+        inline const juce::ParameterID brandonOrbit    { "brandonOrbit",    4 };
+        inline const juce::ParameterID brandonCrush    { "brandonCrush",    4 };
+        inline const juce::ParameterID brandonPitch    { "brandonPitch",    4 };
+        inline const juce::ParameterID brandonChaos    { "brandonChaos",    4 };
     }
 
     /** The performance gestures, in MIDI note order (Throw, Freeze, Tapestop, Runaway, Reverse). */
@@ -91,6 +99,9 @@ namespace Params
 
     // Feel: how far synced echoes sit ahead of (negative) or behind the beat.
     constexpr float maxFeelMs = 50.0f;
+
+    // Every Brandon control starts here.
+    constexpr float brandonDefaultPercent = 67.0f;
 
     enum class FilterPosition { inFeedbackLoop = 0, outputOnly = 1 };
     const juce::StringArray& getFilterPositionNames();

@@ -16,6 +16,7 @@ pad controller) into an instrument for playing the delay live.
 - **Modulation**: chorus, flanger or phaser, in the feedback loop or on the output
 - **Multi-Tap**: up to 16 taps, each with its own time, level, pan, pitch and Reverse
 - **Groove** and **Feel**: swing for synced taps, and synced echoes ahead of or behind the beat
+- **Brandon**: the chaos mode. Every repeat rolls the dice: octave jumps, bit crushing, reverse, tape brakes, freezes, time jumps, stutter, ring modulation and an orbit around you. Its controls start at 67%
 - **Gestures**: Throw, Freeze, Tapestop, Runaway and Reverse, held or latched
 - Factory presets, each with a spoken hint for which gesture to try
 

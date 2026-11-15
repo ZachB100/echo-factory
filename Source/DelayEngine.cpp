@@ -15,6 +15,16 @@ namespace
     // Shimmer's feed into the reverb at full.
     constexpr float maxShimmerSend = 0.6f;
 
+    // Brandon. A tick is one delay time, within these limits so short delays don't flicker.
+    constexpr float brandonMinTickSec = 0.125f, brandonMaxTickSec = 2.0f;
+    constexpr float brandonCeilingDrop = 0.2f;                           // the loop's soft clip sits at 0.8 while it's on
+    constexpr float brandonMinBits = 4.0f, brandonMinRateHz = 2000.0f;   // Crush at full
+    constexpr float brandonDarkMinHz = 1000.0f, brandonDarkMaxHz = 6000.0f;
+    constexpr float brandonStutterMinHz = 5.0f, brandonStutterMaxHz = 14.0f;
+    constexpr float brandonRingMinHz = 60.0f, brandonRingMaxHz = 800.0f;
+    constexpr float brandonTimeRatios[] { 0.5f, 0.75f, 1.5f, 2.0f };
+    constexpr float orbitMaxHz = 1.2f, orbitMaxMs = 25.0f, orbitNearHz = 18000.0f, orbitFarHz = 2500.0f, orbitFarDrop = 0.5f;
+
     // What each Style does at full Wear. Studio Tape is the original character.
     struct StyleSpec
     {
@@ -134,6 +144,22 @@ void DelayEngine::prepare (double newSampleRate, int maxBlockSize, int numChanne
     for (auto& voice : voices)
         prepareVoice (voice);
 
+    brandonAmount.reset (sampleRate, 0.1);
+    brandonFeedback.reset (sampleRate, 0.02);
+    brandonOrbit.reset (sampleRate, 0.05);
+    brandonLofi.reset (sampleRate, 0.02);
+    brandonDark.reset (sampleRate, 0.02);
+    brandonGate.reset (sampleRate, 0.004);
+    brandonRing.reset (sampleRate, 0.02);
+    orbitSpeed.reset (sampleRate, 0.3);
+    brandonHoldMax = juce::jmax (1.0f, (float) (sampleRate / brandonMinRateHz));
+    orbitIncrement = juce::MathConstants<float>::twoPi * orbitMaxHz / (float) sampleRate;
+    orbitMaxSamples = (float) (orbitMaxMs * 0.001 * sampleRate);
+    orbitLine.setMaximumDelayInSamples ((int) std::ceil (orbitMaxSamples) + 3);
+    orbitLine.prepare ({ sampleRate, (juce::uint32) maxBlockSize, 1 });
+    orbitNearCoef = onePoleCoef (orbitNearHz, sampleRate);
+    orbitFarCoef  = onePoleCoef (orbitFarHz, sampleRate);
+
     reset();
 }
 
@@ -191,12 +217,19 @@ void DelayEngine::reset()
     // Taps start again from silence the next time they're needed.
     multiTapAmount.setCurrentAndTargetValue (multiTapAmount.getTargetValue());
     tapsRunning = false;
+
+    for (auto* smoothed : { &brandonAmount, &brandonFeedback, &brandonOrbit, &brandonLofi, &brandonDark, &brandonGate, &brandonRing, &orbitSpeed })
+        smoothed->setCurrentAndTargetValue (smoothed->getTargetValue());
+
+    brandonCountdown = 0; // rolls at once if it's on
+    ringPhase = orbitAngle = orbitState = 0.0f;
+    orbitLine.reset();
 }
 
 void DelayEngine::setDelayMs (float ms)
 {
-    const auto samples = juce::jlimit (1.0f, maxDelaySamples, (float) (ms * 0.001 * sampleRate));
-    delaySamples.setTargetValue (samples);
+    userDelaySamples = juce::jlimit (1.0f, maxDelaySamples, (float) (ms * 0.001 * sampleRate));
+    updateDelayTarget();
 }
 
 void DelayEngine::setDelaySmoothingMs (float ms)
@@ -379,6 +412,123 @@ float DelayEngine::tape (int channel, float sample, const CharacterSettings& t)
     return darkState[channel];
 }
 
+void DelayEngine::setBrandon (bool on)
+{
+    if (on == brandonOn)
+        return;
+
+    brandonOn = on;
+    brandonAmount.setTargetValue (on ? 1.0f : 0.0f);
+
+    if (on)
+    {
+        brandonCountdown = 0; // the first roll comes at once
+        return;
+    }
+
+    // Off: everything rolled lets go, and fades or glides out on its own.
+    brandonSemitones = 0.0f;
+    head.setPitchSemitones (0.0f);
+    brandonLofi.setTargetValue (0.0f);
+    brandonDark.setTargetValue (1.0f);
+    brandonReverse = brandonBrake = brandonFreeze = stuttering = false;
+    brakeCountdown = freezeCountdown = 0;
+    updateHeadGestures();
+    updateFreeze();
+    brandonTimeRatio = 1.0f;
+    updateDelayTarget();
+    brandonGate.setTargetValue (1.0f);
+    brandonRing.setTargetValue (0.0f);
+}
+
+void DelayEngine::rollBrandon()
+{
+    const auto tick = juce::jlimit (brandonMinTickSec * (float) sampleRate, brandonMaxTickSec * (float) sampleRate, userDelaySamples);
+    brandonCountdown = (int) tick;
+
+    const auto chance  = [this] (float p) { return random.nextFloat() < p; };
+    const auto between = [this] (float low, float high) { return low + (high - low) * random.nextFloat(); };
+
+    // Pitch: this repeat jumps an octave, up or down.
+    brandonSemitones = chance (brandonPitch) ? (random.nextBool() ? 12.0f : -12.0f) : 0.0f;
+    head.setPitchSemitones (brandonSemitones);
+
+    // Crush: fewer bits at a lower rate on the write path, and sometimes a darker tone with it.
+    brandonLofi.setTargetValue (chance (brandonCrush) ? brandonCrush * between (0.35f, 1.0f) : 0.0f);
+    brandonDark.setTargetValue (chance (brandonCrush) ? onePoleCoef (between (brandonDarkMinHz, brandonDarkMaxHz), sampleRate) : 1.0f);
+
+    // Chaos: the gestures fire themselves, the time jumps, and the output stutters or rings.
+    brandonReverse  = chance (0.5f * brandonChaos);
+    brandonBrake    = chance (0.3f * brandonChaos);
+    brakeCountdown  = brandonBrake ? (int) (tick * between (0.35f, 0.7f)) : 0;
+    brandonFreeze   = chance (0.25f * brandonChaos);
+    freezeCountdown = brandonFreeze ? (int) (tick * between (0.5f, 1.0f)) : 0;
+    updateHeadGestures();
+    updateFreeze();
+
+    brandonTimeRatio = chance (0.45f * brandonChaos) ? brandonTimeRatios[random.nextInt (juce::numElementsInArray (brandonTimeRatios))] : 1.0f;
+    updateDelayTarget();
+
+    stuttering = chance (0.3f * brandonChaos);
+    brandonGate.setTargetValue (1.0f);
+
+    if (stuttering)
+        stutterCountdown = stutterHalfPeriod = (int) ((float) sampleRate / (2.0f * between (brandonStutterMinHz, brandonStutterMaxHz)));
+
+    const auto ring = chance (0.25f * brandonChaos);
+    brandonRing.setTargetValue (ring ? 1.0f : 0.0f);
+
+    if (ring)
+        ringIncrement = juce::MathConstants<float>::twoPi * between (brandonRingMinHz, brandonRingMaxHz) / (float) sampleRate;
+
+    // Orbit: a new speed, and sometimes the other way round.
+    const auto backwards = (orbitSpeed.getTargetValue() < 0.0f) != chance (0.3f);
+    orbitSpeed.setTargetValue ((backwards ? -1.0f : 1.0f) * between (0.2f, 1.0f));
+}
+
+void DelayEngine::brandonOutput (bool isStereo, float echo[2], float amount)
+{
+    // The stutter gate and the ring modulator: neither can raise the level.
+    const auto ring = brandonRing.getNextValue();
+    ringPhase += ringIncrement;
+
+    if (ringPhase >= juce::MathConstants<float>::twoPi)
+        ringPhase -= juce::MathConstants<float>::twoPi;
+
+    const auto gain = brandonGate.getNextValue() * (1.0f + ring * (std::sin (ringPhase) - 1.0f));
+    echo[0] *= gain;
+    echo[1] *= gain;
+
+    // The orbit: the knob sets how far round the echo flies and how fast.
+    const auto orbit = amount * brandonOrbit.getNextValue();
+
+    if (orbit <= 0.0f)
+        return;
+
+    orbitAngle += orbit * orbitSpeed.getNextValue() * orbitIncrement;
+
+    if (orbitAngle >= juce::MathConstants<float>::twoPi)
+        orbitAngle -= juce::MathConstants<float>::twoPi;
+    else if (orbitAngle < 0.0f)
+        orbitAngle += juce::MathConstants<float>::twoPi;
+
+    const auto behind = orbit * 0.5f * (1.0f - std::cos (orbitAngle)); // 0 in front, up to 1 behind
+    orbitLine.pushSample (0, isStereo ? 0.5f * (echo[0] + echo[1]) : echo[0]);
+    const auto distant = orbitLine.popSample (0, 1.0f + orbitMaxSamples * behind);
+    orbitState += (orbitNearCoef + behind * (orbitFarCoef - orbitNearCoef)) * (distant - orbitState);
+    const auto flying = orbitState * (1.0f - orbitFarDrop * behind);
+
+    if (! isStereo)
+    {
+        echo[0] += orbit * (flying - echo[0]);
+        return;
+    }
+
+    const auto angle = (1.0f + orbit * std::sin (orbitAngle)) * juce::MathConstants<float>::pi * 0.25f; // equal-power pan
+    echo[0] += orbit * (std::cos (angle) * flying - echo[0]);
+    echo[1] += orbit * (std::sin (angle) * flying - echo[1]);
+}
+
 float DelayEngine::syncedTapMs (float beats) const
 {
     // Swing: within each beat the first half stretches and the second half
@@ -404,6 +554,34 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
     for (int i = 0; i < numSamples; ++i)
     {
+        // Brandon: the ticks and what they've rolled. Off and faded out, none of it runs.
+        const auto brandonNow = brandonAmount.getNextValue();
+        const auto brandonActive = brandonOn || brandonNow > 0.0f;
+
+        if (brandonOn)
+        {
+            if (--brandonCountdown <= 0)
+                rollBrandon();
+
+            if (brakeCountdown > 0 && --brakeCountdown == 0)
+            {
+                brandonBrake = false;
+                updateHeadGestures();
+            }
+
+            if (freezeCountdown > 0 && --freezeCountdown == 0)
+            {
+                brandonFreeze = false;
+                updateFreeze();
+            }
+
+            if (stuttering && --stutterCountdown <= 0)
+            {
+                stutterCountdown = stutterHalfPeriod;
+                brandonGate.setTargetValue (brandonGate.getTargetValue() > 0.5f ? 0.0f : 1.0f);
+            }
+        }
+
         const auto frozen = freezeAmount.getNextValue();
         const auto wearNow = wear.getNextValue();
         const auto runaway = runawayAmount.getNextValue();
@@ -416,7 +594,8 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         const auto diffusionNow = diffusion.getNextValue();
         const auto handover = diffusionNow * diffusionNow; // share of the sustain given to the reverb
         const auto feedbackNow = feedback.getNextValue();
-        const auto fb = feedbackNow * (1.0f - runaway) * (1.0f - handover)
+        const auto feedbackSet = brandonActive ? feedbackNow + brandonNow * (brandonFeedback.getNextValue() - feedbackNow) : feedbackNow;
+        const auto fb = feedbackSet * (1.0f - runaway) * (1.0f - handover)
                       + runaway * (runawayMinFeedback + runawayFeedbackRange * drive);
 
         // The character stage, from Wear, Runaway and the (smoothed) style.
@@ -438,6 +617,23 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         {
             character.lofiHoldStep = 1.0f / (1.0f + character.lofi * (lofiMaxHold - 1.0f));
             character.lofiSteps = std::exp2 (16.0f - character.lofi * (16.0f - lofiMinBits));
+        }
+
+        if (brandonActive)
+        {
+            // Brandon's write path: the saturator (with its DC blocker) at a lower
+            // ceiling, so the loop can't pass 0.8, plus the rolled crush and tone.
+            character.amount   = juce::jmax (character.amount, brandonNow);
+            character.ceiling  = juce::jmin (character.ceiling, 1.0f - brandonCeilingDrop * brandonNow);
+            character.darkCoef = juce::jmin (character.darkCoef, brandonDark.getNextValue());
+            const auto crush = brandonNow * brandonLofi.getNextValue();
+
+            if (crush > character.lofi) // harsher than Wear's lo-fi
+            {
+                character.lofi = crush;
+                character.lofiHoldStep = 1.0f / (1.0f + crush * (brandonHoldMax - 1.0f));
+                character.lofiSteps = std::exp2 (16.0f - crush * (16.0f - brandonMinBits));
+            }
         }
 
         const auto wet = mix.getNextValue();
@@ -504,7 +700,7 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
             // The decay the delay's feedback gives: 60 dB at -20 log10(fb) dB per period.
             const auto delaySeconds = delaySamples.getCurrentValue() / (float) sampleRate;
-            const auto feedbackRt60 = feedbackNow > 0.001f ? 3.0f * delaySeconds / -std::log10 (feedbackNow) : 0.0f;
+            const auto feedbackRt60 = feedbackSet > 0.001f ? 3.0f * delaySeconds / -std::log10 (feedbackSet) : 0.0f;
             const auto washRt60 = juce::jlimit (roomDiffusionRt60, maxDiffusionRt60, feedbackRt60);
             const auto rt60 = minDiffusionRt60 + (washRt60 - minDiffusionRt60) * handover;
 
@@ -576,6 +772,13 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 if (outMod)
                     heardEcho = modulators[1].process (ch, heardEcho);
 
+                if (brandonActive)
+                {
+                    float echoes[2] { heardEcho, 0.0f };
+                    brandonOutput (false, echoes, brandonNow);
+                    heardEcho = echoes[0];
+                }
+
                 data[i] = dry * (1.0f - wet) + heardEcho * wet;
             }
 
@@ -626,6 +829,9 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 heardEcho[ch] = modulators[1].process (ch, heardEcho[ch]);
         }
 
+        if (brandonActive)
+            brandonOutput (true, heardEcho, brandonNow);
+
         widthDelayLine.pushSample (0, heardEcho[1]);
         const auto rightEcho = widthDelayLine.popSample (0, width);
 
@@ -671,9 +877,9 @@ void DelayEngine::prepareVoice (TapVoice& voice)
 void DelayEngine::startVoice (TapVoice& voice, const TapSettings& settings)
 {
     voice.playing = settings;
-    voice.head.setTapestop (tapestopHeld);
-    voice.head.setReverse (settings.reverse || reverseHeld);
-    voice.head.setPitchSemitones (settings.semitones);
+    voice.head.setTapestop (tapestopHeld || brandonBrake);
+    voice.head.setReverse (settings.reverse || reverseHeld || brandonReverse);
+    voice.head.setPitchSemitones (juce::jlimit (-12.0f, 12.0f, settings.semitones + brandonSemitones));
     voice.head.reset();
     voice.delaySamples.setCurrentAndTargetValue (juce::jlimit (1.0f, maxDelaySamples, (float) (settings.delayMs * 0.001 * sampleRate)));
     voice.gainNow.setCurrentAndTargetValue (settings.gain);
@@ -774,10 +980,12 @@ void DelayEngine::updateVoices (bool isStereo)
         voice.leftGain.setTargetValue (std::cos (angle));
         voice.rightGain.setTargetValue (std::sin (angle));
 
+        // Brandon's rolls reach the taps too. Its octave on top of a tap's own
+        // stays within the octave the line has room for.
         voice.head.setTapestopTimeMs (tapestopMs);
-        voice.head.setTapestop (tapestopHeld);
-        voice.head.setReverse (settings.reverse || reverseHeld);
-        voice.head.setPitchSemitones (settings.semitones);
+        voice.head.setTapestop (tapestopHeld || brandonBrake);
+        voice.head.setReverse (settings.reverse || reverseHeld || brandonReverse);
+        voice.head.setPitchSemitones (juce::jlimit (-12.0f, 12.0f, settings.semitones + brandonSemitones));
     }
 }
 

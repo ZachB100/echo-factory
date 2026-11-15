@@ -39,10 +39,11 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
     characterGroup.setExplicitFocusOrder (5);
     filtersGroup.setExplicitFocusOrder (6);
     modulationGroup.setExplicitFocusOrder (7);
-    gestureGroup.setExplicitFocusOrder (8);
+    brandonGroup.setExplicitFocusOrder (8);
+    gestureGroup.setExplicitFocusOrder (9);
     modesGroup.setExplicitFocusOrder (3); // inside the Delay group, between Smoothing and Feedback
 
-    for (auto* group : { &delayGroup, &characterGroup, &filtersGroup, &modulationGroup, &gestureGroup })
+    for (auto* group : { &delayGroup, &characterGroup, &filtersGroup, &modulationGroup, &brandonGroup, &gestureGroup })
         addAndMakeVisible (group);
 
     addChildComponent (tapsPanel); // shown by Multi-Tap
@@ -246,6 +247,40 @@ EchoFactoryEditor::EchoFactoryEditor (EchoFactoryProcessor& p)
     modDepthAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::modDepth.getParamID(), modDepthSlider);
 
     // ---- Perform settings ------------------------------------------------
+    // Brandon
+    brandonButton.setTitle ("Brandon");
+    brandonButton.setDescription ("When on, every repeat rolls the dice: octave jumps, crushing, reverse, brakes, freezes, "
+                                  "time jumps, stutter, ring modulation and an orbit. Brandon Feedback replaces Feedback.");
+    brandonButton.setWantsKeyboardFocus (true);
+    brandonButton.setExplicitFocusOrder (1);
+    brandonGroup.addAndMakeVisible (brandonButton);
+    brandonButtonAttachment = std::make_unique<ButtonAttachment> (p.apvts, Params::ID::brandon.getParamID(), brandonButton);
+
+    setupPercentSlider (brandonGroup, brandonFeedbackSlider, brandonFeedbackLabel, "Brandon Feedback",
+                        "Feedback while Brandon is on, 0 to 95 percent.");
+    brandonFeedbackSlider.setExplicitFocusOrder (2);
+    brandonFeedbackAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::brandonFeedback.getParamID(), brandonFeedbackSlider);
+
+    setupPercentSlider (brandonGroup, brandonOrbitSlider, brandonOrbitLabel, "Brandon Orbit",
+                        "How far and how fast the echoes circle around you, 0 to 100 percent.");
+    brandonOrbitSlider.setExplicitFocusOrder (3);
+    brandonOrbitAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::brandonOrbit.getParamID(), brandonOrbitSlider);
+
+    setupPercentSlider (brandonGroup, brandonCrushSlider, brandonCrushLabel, "Brandon Crush",
+                        "Chance that a repeat is crushed to fewer bits at a lower rate, 0 to 100 percent.");
+    brandonCrushSlider.setExplicitFocusOrder (4);
+    brandonCrushAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::brandonCrush.getParamID(), brandonCrushSlider);
+
+    setupPercentSlider (brandonGroup, brandonPitchSlider, brandonPitchLabel, "Brandon Pitch",
+                        "Chance that a repeat jumps an octave up or down, 0 to 100 percent.");
+    brandonPitchSlider.setExplicitFocusOrder (5);
+    brandonPitchAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::brandonPitch.getParamID(), brandonPitchSlider);
+
+    setupPercentSlider (brandonGroup, brandonChaosSlider, brandonChaosLabel, "Brandon Chaos",
+                        "Chance of reverse, a tape brake, a freeze, a time jump, stutter or ring modulation on each repeat, 0 to 100 percent.");
+    brandonChaosSlider.setExplicitFocusOrder (6);
+    brandonChaosAttachment = std::make_unique<SliderAttachment> (p.apvts, Params::ID::brandonChaos.getParamID(), brandonChaosSlider);
+
     setupComboBox (gestureGroup, inputModeBox, inputModeLabel, "Input",
                    "Always sends the input into the delay. Throw Only sends it in only while Throw is held or latched.",
                    Params::getInputModeNames());
@@ -434,7 +469,7 @@ void EchoFactoryEditor::setMainControlsVisible (bool shouldBeVisible)
 {
     // The groups take their controls and labels with them.
     for (auto* c : std::initializer_list<juce::Component*> { &presetBar, &performPad, &delayGroup, &characterGroup,
-                                                              &filtersGroup, &modulationGroup, &gestureGroup })
+                                                              &filtersGroup, &modulationGroup, &brandonGroup, &gestureGroup })
         c->setVisible (shouldBeVisible);
 
     tapsPanel.setVisible (shouldBeVisible && tapsVisible);
@@ -476,7 +511,8 @@ void EchoFactoryEditor::paint (juce::Graphics& g)
     // Dividers between the rows.
     g.setColour (Colours::topBar);
 
-    for (auto dividerY : { (float) characterGroup.getY() - 4.0f, (float) filtersGroup.getY() - 4.0f, (float) performPad.getY() - 6.0f })
+    for (auto dividerY : { (float) characterGroup.getY() - 4.0f, (float) filtersGroup.getY() - 4.0f,
+                           (float) brandonGroup.getY() - 4.0f, (float) performPad.getY() - 6.0f })
         g.drawLine (16.0f, dividerY, (float) mainWidth - 16.0f, dividerY, 1.5f);
 
     // And between the main controls and the Taps panel.
@@ -570,12 +606,24 @@ void EchoFactoryEditor::resized()
     modRateSlider.setBounds (knob (modulation, row3Column));
     modDepthSlider.setBounds (modulation.reduced (6, 0));
 
-    // Row 4: perform pad and its settings, in seven columns
-    auto row4 = area.withTrimmedTop (12).withTrimmedBottom (8);
-    const auto performColumn = row4.getWidth() / 7;
+    // Row 4: Brandon, six columns: the switch, then its controls
+    brandonGroup.setBounds (area.removeFromTop (rowHeight).withTrimmedTop (8).withTrimmedBottom (8));
+    auto row4 = brandonGroup.getLocalBounds().withTrimmedTop (24);
+    const auto row4Column = row4.getWidth() / 6;
 
-    performPad.setBounds (row4.removeFromLeft (performColumn * 2).reduced (6, 0));
-    gestureGroup.setBounds (row4);
+    brandonButton.setBounds (row4.removeFromLeft (row4Column).withSizeKeepingCentre (row4Column - 12, 34));
+    brandonFeedbackSlider.setBounds (knob (row4, row4Column));
+    brandonOrbitSlider.setBounds (knob (row4, row4Column));
+    brandonCrushSlider.setBounds (knob (row4, row4Column));
+    brandonPitchSlider.setBounds (knob (row4, row4Column));
+    brandonChaosSlider.setBounds (row4.reduced (6, 0));
+
+    // Row 5: perform pad and its settings, in seven columns
+    auto row5 = area.withTrimmedTop (12).withTrimmedBottom (8);
+    const auto performColumn = row5.getWidth() / 7;
+
+    performPad.setBounds (row5.removeFromLeft (performColumn * 2).reduced (6, 0));
+    gestureGroup.setBounds (row5);
     auto settings = gestureGroup.getLocalBounds().withTrimmedTop (20); // labels
     throwLevelSlider.setBounds (knob (settings, performColumn));
     freezeFadeSlider.setBounds (knob (settings, performColumn));

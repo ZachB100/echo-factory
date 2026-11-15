@@ -76,6 +76,15 @@
     While synced, tap times come from their beats at the tempo, swung by Groove
     (an off-beat eighth moves from halfway to two thirds of the beat at full)
     and moved by Feel (milliseconds ahead of or behind the beat).
+
+    Brandon is the chaos mode. Every tick (one delay time, within limits) rolls
+    the dice for the next repeat: an octave up or down on the output heads,
+    fewer bits at a lower rate and a darker tone on the write path, Reverse, a
+    tape brake, a freeze, a jump in the delay time, a stutter gate and ring
+    modulation on the output, and the echo orbits the listener with a Doppler
+    bend. While on, Brandon Feedback takes the place of Feedback, and the
+    saturator sits at a 0.8 ceiling with its DC blocker in, so the loop can
+    never pass 0 dB or build up an offset. Off, none of it runs.
 */
 class DelayEngine
 {
@@ -112,7 +121,7 @@ public:
     void setFiltersInFeedbackLoop (bool inLoop) { filtersInLoop = inLoop; }
 
     /** While frozen, input is no longer written and the buffer loops at full level. */
-    void setFrozen (bool shouldFreeze) { freezeAmount.setTargetValue (shouldFreeze ? 1.0f : 0.0f); }
+    void setFrozen (bool shouldFreeze) { frozenHeld = shouldFreeze; updateFreeze(); }
     void setFreezeFadeMs (float ms);
 
     /** Linear gain of the input into the delay line. */
@@ -126,8 +135,8 @@ public:
     void setRunaway (bool shouldRunAway)   { runawayAmount.setTargetValue (shouldRunAway ? 1.0f : 0.0f); }
     void setRunawayDrive (float amount01)  { runawayDrive.setTargetValue (juce::jlimit (0.0f, 1.0f, amount01)); }
 
-    void setTapestop (bool shouldStop)     { tapestopHeld = shouldStop; head.setTapestop (shouldStop); }
-    void setReverse (bool shouldReverse)   { reverseHeld = shouldReverse; head.setReverse (shouldReverse); }
+    void setTapestop (bool shouldStop)     { tapestopHeld = shouldStop; updateHeadGestures(); }
+    void setReverse (bool shouldReverse)   { reverseHeld = shouldReverse; updateHeadGestures(); }
     void setDiffusion (float amount01)     { diffusion.setTargetValue (juce::jlimit (0.0f, 1.0f, amount01)); }
     void setTapestopTimeMs (float ms);
 
@@ -152,6 +161,15 @@ public:
 
     /** Any thread; taps past maxTaps are ignored. */
     void setTaps (const std::vector<TapSettings>& taps);
+
+    /** Brandon, the chaos mode. While on, Brandon Feedback takes the place of Feedback;
+        the others are the chance (0 to 1) that each tick rolls that effect. */
+    void setBrandon (bool on);
+    void setBrandonFeedback (float amount01) { brandonFeedback.setTargetValue (juce::jlimit (0.0f, 0.95f, amount01)); }
+    void setBrandonOrbit (float amount01)    { brandonOrbit.setTargetValue (juce::jlimit (0.0f, 1.0f, amount01)); }
+    void setBrandonCrush (float chance01)    { brandonCrush = juce::jlimit (0.0f, 1.0f, chance01); }
+    void setBrandonPitch (float chance01)    { brandonPitch = juce::jlimit (0.0f, 1.0f, chance01); }
+    void setBrandonChaos (float chance01)    { brandonChaos = juce::jlimit (0.0f, 1.0f, chance01); }
 
     void process (juce::AudioBuffer<float>& buffer);
 
@@ -244,4 +262,31 @@ private:
     float shimmerSemitones = 12.0f;
     float diffusionCos = 1.0f, diffusionSin = 0.0f, diffusionSetting = 0.0f, diffusionRt60 = 0.0f, diffusionShimmer = -1.0f, diffusionMakeup = 1.0f;
     bool diffusionActive = false;
+
+    // ---- Brandon ----------------------------------------------------------------
+    /** Rolls what the next tick does. */
+    void rollBrandon();
+
+    /** Brandon's output effects: the stutter gate, ring modulation and the orbit. */
+    void brandonOutput (bool isStereo, float echo[2], float amount);
+
+    // The gestures Brandon rolls sit alongside the player's own.
+    void updateFreeze()       { freezeAmount.setTargetValue (frozenHeld || brandonFreeze ? 1.0f : 0.0f); }
+    void updateHeadGestures() { head.setTapestop (tapestopHeld || brandonBrake); head.setReverse (reverseHeld || brandonReverse); }
+    void updateDelayTarget()  { delaySamples.setTargetValue (juce::jlimit (1.0f, maxDelaySamples, userDelaySamples * brandonTimeRatio)); }
+
+    bool brandonOn = false, frozenHeld = false;
+    juce::SmoothedValue<float> brandonAmount, brandonFeedback, brandonOrbit;
+    float brandonCrush = 0.0f, brandonPitch = 0.0f, brandonChaos = 0.0f; // chances per tick
+    int brandonCountdown = 0, brakeCountdown = 0, freezeCountdown = 0, stutterCountdown = 0, stutterHalfPeriod = 0;
+    float userDelaySamples = 1.0f, brandonTimeRatio = 1.0f, brandonSemitones = 0.0f, brandonHoldMax = 1.0f;
+    bool brandonReverse = false, brandonBrake = false, brandonFreeze = false, stuttering = false;
+    juce::SmoothedValue<float> brandonLofi, brandonDark { 1.0f }, brandonGate { 1.0f }, brandonRing;
+    float ringPhase = 0.0f, ringIncrement = 0.0f;
+
+    // Orbit: the mono echo circles the listener. The far side is further away, so
+    // it's delayed (the Doppler bend), darker and quieter.
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> orbitLine;
+    juce::SmoothedValue<float> orbitSpeed; // -1 to 1: direction and share of the top speed
+    float orbitAngle = 0.0f, orbitIncrement = 0.0f, orbitMaxSamples = 0.0f, orbitNearCoef = 1.0f, orbitFarCoef = 1.0f, orbitState = 0.0f;
 };

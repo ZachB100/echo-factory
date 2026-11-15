@@ -119,6 +119,9 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& state)
 
     addFactoryPreset ("Telephone Line", "Narrow, clipped repeats.",
                       { { &delayTimeMs, 180 }, { &feedback, 50 }, { &mix, 40 }, { &style, telephone }, { &wear, 65 } });
+
+    addFactoryPreset ("Brandon", "Brandon is on: every repeat rolls the dice. Hold D to freeze the mess.",
+                      { { &brandon, on }, { &sync, on }, { &syncDivision, eighth }, { &mix, 45 }, { &highCut, 9000 } });
 }
 
 void PresetManager::addFactoryPreset (const juce::String& name, const juce::String& hint,
