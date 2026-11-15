@@ -39,8 +39,8 @@ private:
     void setTapsVisible (bool);
 
     // The main controls keep their width; Multi-Tap adds the Taps panel to the right.
-    static constexpr int mainWidth = 980, tapsWidth = 560, editorHeight = 790;
-    static constexpr int delayRowHeight = 196, rowHeight = 170;
+    static constexpr int mainWidth = 980, tapsWidth = 560, editorHeight = 880;
+    static constexpr int delayRowHeight = 196, rowHeight = 150;
     bool tapsVisible = false;
 
     // ValueTree::Listener — watches the preset name, including state restored by the host.
@@ -61,6 +61,7 @@ private:
     ControlGroup characterGroup  { "Character", "Echo style, wear, diffusion, shimmer and stereo width" };
     ControlGroup filtersGroup    { "Filters", "Low cut, high cut and filter position" };
     ControlGroup modulationGroup { "Modulation", "Chorus, flanger or phaser on the echoes, with rate, depth and position" };
+    ControlGroup brandonGroup    { "Brandon", "The chaos mode and its controls: feedback, orbit, crush, pitch jumps and chaos" };
     ControlGroup gestureGroup    { "Gesture Settings", "Input mode, how each gesture behaves, and reset" };
 
     AccessibleSlider timeSlider, smoothingSlider, feedbackSlider, mixSlider, feelSlider, grooveSlider;
@@ -82,6 +83,10 @@ private:
     AccessibleSlider modRateSlider, modDepthSlider;
     juce::Label modTypeLabel, modPosLabel, modRateLabel, modDepthLabel;
 
+    juce::ToggleButton brandonButton { "Brandon" };
+    AccessibleSlider brandonFeedbackSlider, brandonOrbitSlider, brandonCrushSlider, brandonPitchSlider, brandonChaosSlider;
+    juce::Label brandonFeedbackLabel, brandonOrbitLabel, brandonCrushLabel, brandonPitchLabel, brandonChaosLabel;
+
     PerformPad performPad;
     TapsPanel tapsPanel;
     AccessibleSlider throwLevelSlider, freezeFadeSlider, tapestopTimeSlider, runawayDriveSlider;
@@ -92,6 +97,8 @@ private:
     std::unique_ptr<SliderAttachment> timeAttachment, smoothingAttachment, feedbackAttachment, mixAttachment, feelAttachment, grooveAttachment;
     std::unique_ptr<SliderAttachment> wearAttachment, diffusionAttachment, shimmerAttachment, widthAttachment, lowCutAttachment, highCutAttachment;
     std::unique_ptr<SliderAttachment> modRateAttachment, modDepthAttachment;
+    std::unique_ptr<SliderAttachment> brandonFeedbackAttachment, brandonOrbitAttachment, brandonCrushAttachment, brandonPitchAttachment, brandonChaosAttachment;
+    std::unique_ptr<ButtonAttachment> brandonButtonAttachment;
     std::unique_ptr<ButtonAttachment> syncButtonAttachment, pingPongButtonAttachment, freezeButtonAttachment, multiTapButtonAttachment;
     std::unique_ptr<SliderAttachment> throwLevelAttachment, freezeFadeAttachment, tapestopTimeAttachment, runawayDriveAttachment;
     std::unique_ptr<ComboBoxAttachment> styleAttachment, shimmerPitchAttachment, filterPosAttachment, modTypeAttachment, modPosAttachment, inputModeAttachment;

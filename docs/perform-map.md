@@ -77,8 +77,9 @@ Laid out for 4×4 pad controllers starting at 36.
 | 28 | Smoothing | 102 | Sync (≥ 64 on) |
 | 29 | Throw Level | 103 | Ping-Pong |
 | 30 | Freeze Fade | 104 | Input: Throw Only |
-| 64 | Sustain pedal: Freeze, held | 105 | Filter Position |
-|    |                             | 106 | Multi-Tap (≥ 64 on) |
-|    |                             | 107 | Modulation (type) |
-|    |                             | 108 | Modulation Position |
-|    |                             | 109 | Style |
+| 38 | Brandon Feedback | 105 | Filter Position |
+| 39 | Brandon Orbit | 106 | Multi-Tap (≥ 64 on) |
+| 40 | Brandon Crush | 107 | Modulation (type) |
+| 41 | Brandon Pitch | 108 | Modulation Position |
+| 42 | Brandon Chaos | 109 | Style |
+| 64 | Sustain pedal: Freeze, held | 110 | Brandon (≥ 64 on) |

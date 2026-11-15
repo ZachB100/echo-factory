@@ -31,6 +31,8 @@ struct Setup
     float delayMs = 300.0f, feedback = 0.5f, wear = 0.0f, runawayDrive = 0.5f, diffusion = 0.0f, shimmer = 0.0f;
     int style = 0, shimmerSemitones = 12, modType = 0;
     bool pingPong = false, filters = false, modInLoop = true;
+    bool brandon = false;
+    float brandonAmount = 0.67f; // every Brandon control, feedback included
     int outputChannel = 0;
 };
 
@@ -51,6 +53,8 @@ std::vector<float> run (const Setup& s, float seconds, const Input& input, const
     e.setStyle (s.style); e.setShimmer (s.shimmer); e.setShimmerSemitones ((float) s.shimmerSemitones);
     e.setModulationType (s.modType); e.setModulationRateHz (0.6f); e.setModulationDepth (0.7f); e.setModulationInFeedbackLoop (s.modInLoop);
     e.setGroove (0.0f); e.setFeelMs (0.0f);
+    e.setBrandon (s.brandon); e.setBrandonFeedback (s.brandonAmount); e.setBrandonOrbit (s.brandonAmount);
+    e.setBrandonCrush (s.brandonAmount); e.setBrandonPitch (s.brandonAmount); e.setBrandonChaos (s.brandonAmount);
     e.reset();
 
     std::vector<float> out;
@@ -767,6 +771,50 @@ void testModulation()
     }
 }
 
+void testBrandon()
+{
+    char d[128];
+
+    {
+        // Off is the plain delay, exactly, whatever its controls say. Once it's
+        // been on, what it did to the loop dies away with the repeats.
+        Setup s; s.filters = true; s.brandonAmount = 0.0f;
+        const auto ref = run (s, 12.0f, sine());
+        s.brandonAmount = 1.0f;
+        const auto never = run (s, 12.0f, sine());
+        const auto onThenOff = run (s, 12.0f, sine(), [] (DelayEngine& e, float t) { e.setBrandon (t < 1.0f); });
+        std::snprintf (d, sizeof d, "never on %.2e, 10 s after switching off %.2e", maxDiff (never, ref, 0.0f), maxDiff (onThenOff, ref, 11.0f));
+        check ("brandon off: bit-exact plain delay", maxDiff (never, ref, 0.0f) == 0.0f && maxDiff (onThenOff, ref, 11.0f) < 1e-3f, d);
+    }
+
+    {
+        // Everything at full, feedback at its 95% limit, Runaway pressed, loud
+        // input: every stage in the loop is non-expansive and the saturator's
+        // ceiling holds, so nothing passes 0 dB; with DC in, nothing builds up.
+        Setup s; s.brandon = true; s.brandonAmount = 1.0f;
+        const auto loud = run (s, 20.0f, loudNoise(), [] (DelayEngine& e, float t) { e.setRunaway (t > 2.0f); });
+        const auto offset = run (s, 12.0f, dc (0.5f));
+        double sum = 0.0;
+        const auto from = (size_t) (6.0f * sr);
+
+        for (auto i = from; i < offset.size(); ++i)
+            sum += offset[i];
+
+        const auto mean = sum / (double) (offset.size() - from);
+        std::snprintf (d, sizeof d, "peak %.3f; DC in: mean %.4f, peak %.3f", peak (loud, 1.0f), mean, peak (offset));
+        check ("brandon at full, feedback 95%, runaway, loud input: bounded, no DC",
+               peak (loud, 1.0f) < 1.0f && peak (offset) < 1.0f && std::abs (mean) < 0.01, d);
+    }
+
+    {
+        // At the defaults (everything 67%), a burst dies away.
+        Setup s; s.brandon = true;
+        const auto out = run (s, 30.0f, noiseBurst());
+        std::snprintf (d, sizeof d, "peak %.3f  last-second rms %.4f", peak (out), rms (out, 29.0f, 30.0f));
+        check ("brandon at 67%: bounded, decays", peak (out) < 1.0f && rms (out, 29.0f, 30.0f) < 0.02f, d);
+    }
+}
+
 void testGroove()
 {
     char d[160];
@@ -812,6 +860,7 @@ int main()
     testShimmer();
     testModulation();
     testGroove();
+    testBrandon();
 
     std::printf ("%d failure(s)\n", failures);
     return failures == 0 ? 0 : 1;
